@@ -12,12 +12,68 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+func (m model) renderSaveDialog() string {
+	// Build the dialog content
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(primaryColor).
+		Render("💾 Save Tape")
+
+	prompt := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#E2E8F0")).
+		Render("Enter filename:")
+
+	input := lipgloss.NewStyle().
+		Foreground(accentColor).
+		Bold(true).
+		Render(m.saveFilename + "█")
+
+	hint := lipgloss.NewStyle().
+		Foreground(dimColor).
+		Italic(true).
+		Render("Press Enter to save, Esc to cancel")
+
+	dialogContent := fmt.Sprintf("%s\n\n%s\n%s\n\n%s", title, prompt, input, hint)
+
+	dialogBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(primaryColor).
+		Padding(1, 2).
+		Width(50).
+		Align(lipgloss.Center)
+
+	dialog := dialogBox.Render(dialogContent)
+
+	// Use lipgloss.Place to center the dialog on the full screen
+	return lipgloss.Place(
+		m.width,
+		m.height,
+		lipgloss.Center,
+		lipgloss.Center,
+		dialog,
+	)
+}
+
 func (m model) renderListView() string {
 	var b strings.Builder
 
 	// Header
-	header := titleStyle.Render("⚡ LLM Proxy")
-	proxyInfo := statusBarStyle.Render(fmt.Sprintf("Listening: %s → %s", m.listenAddr, m.targetURL))
+	var header string
+	var proxyInfo string
+
+	if m.tapeMode {
+		header = titleStyle.Render("📼 LLM Proxy - Tape Playback")
+		proxyInfo = statusBarStyle.Render(fmt.Sprintf("Tape: %s", m.tape.FilePath))
+	} else {
+		header = titleStyle.Render("⚡ LLM Proxy")
+		proxyInfo = statusBarStyle.Render(fmt.Sprintf("Listening: %s → %s", m.listenAddr, m.targetURL))
+	}
+
+	// Show recording indicator if saving to tape
+	if m.saveTapeFile != "" {
+		header = titleStyle.Render("⚡ LLM Proxy 🔴 REC")
+	}
+
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Center, header, "  ", proxyInfo))
 	b.WriteString("\n\n")
 
@@ -73,16 +129,68 @@ func (m model) renderListView() string {
 		return b.String()
 	}
 
-	// Build help text with follow mode indicator and number buffer
-	followIndicator := ""
-	if m.followLatest {
-		followIndicator = lipgloss.NewStyle().Foreground(successColor).Render(" [FOLLOW]")
+	// Show save message if present
+	if m.saveMessage != "" {
+		msgStyle := lipgloss.NewStyle().Foreground(successColor)
+		if strings.HasPrefix(m.saveMessage, "✗") {
+			msgStyle = lipgloss.NewStyle().Foreground(errorColor)
+		}
+		b.WriteString(msgStyle.Render(m.saveMessage))
+		return b.String()
 	}
-	numIndicator := ""
-	if m.numBuffer != "" {
-		numIndicator = lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(fmt.Sprintf(" [%s]", m.numBuffer))
+
+	// Build help text based on mode
+	var help string
+	if m.tapeMode {
+		// Tape playback help
+		playState := "▶"
+		if m.tapePlaying {
+			playState = "⏸"
+		}
+
+		// Playback mode indicator
+		modeStr := "STEP"
+		if m.tapeRealtime {
+			modeStr = "REAL"
+		}
+		playIndicator := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(
+			fmt.Sprintf(" [%s %s %dx]", playState, modeStr, m.tapeSpeed))
+
+		// Follow indicator
+		followIndicator := ""
+		if m.followLatest {
+			followIndicator = lipgloss.NewStyle().Foreground(successColor).Render(" [FOLLOW]")
+		}
+
+		// Progress bar
+		progress := 0.0
+		if m.tape != nil {
+			progress = m.tape.GetProgress()
+		}
+		progressBar := renderProgressBar(progress, 20)
+
+		// Time display
+		timeDisplay := ""
+		if m.tape != nil {
+			elapsed := m.tape.CurrentTime.Sub(m.tape.StartTime)
+			total := m.tape.Duration
+			timeDisplay = lipgloss.NewStyle().Foreground(dimColor).Render(
+				fmt.Sprintf(" %s / %s", formatDuration(elapsed), formatDuration(total)))
+		}
+
+		help = helpStyle.Render("space play • r mode • [/] step • -/+ speed • 0/$ start/end • f follow • q quit") + playIndicator + followIndicator + " " + progressBar + timeDisplay
+	} else {
+		// Live mode help
+		followIndicator := ""
+		if m.followLatest {
+			followIndicator = lipgloss.NewStyle().Foreground(successColor).Render(" [FOLLOW]")
+		}
+		numIndicator := ""
+		if m.numBuffer != "" {
+			numIndicator = lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(fmt.Sprintf(" [%s]", m.numBuffer))
+		}
+		help = helpStyle.Render("↑/↓/j/k navigate • enter select • :N goto • g/G top/bottom • f follow • s save • q quit") + followIndicator + numIndicator
 	}
-	help := helpStyle.Render("↑/↓/j/k navigate • click/enter select • :N goto • g/G top/bottom • f follow • q quit") + followIndicator + numIndicator
 
 	// Calculate total cost across all requests
 	totalCost := 0.0
@@ -102,6 +210,38 @@ func (m model) renderListView() string {
 	b.WriteString(footer)
 
 	return b.String()
+}
+
+// renderProgressBar renders a visual progress bar
+func renderProgressBar(progress float64, width int) string {
+	filled := int(progress * float64(width))
+	empty := width - filled
+
+	filledStyle := lipgloss.NewStyle().Foreground(primaryColor)
+	emptyStyle := lipgloss.NewStyle().Foreground(borderColor)
+
+	bar := filledStyle.Render(strings.Repeat("━", filled)) +
+		emptyStyle.Render(strings.Repeat("─", empty))
+
+	return lipgloss.NewStyle().Foreground(dimColor).Render("[") + bar + lipgloss.NewStyle().Foreground(dimColor).Render("]")
+}
+
+// formatDuration formats a duration for display
+func formatDuration(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	if d < time.Hour {
+		mins := int(d.Minutes())
+		secs := int(d.Seconds()) % 60
+		return fmt.Sprintf("%d:%02d", mins, secs)
+	}
+	hours := int(d.Hours())
+	mins := int(d.Minutes()) % 60
+	return fmt.Sprintf("%d:%02d:00", hours, mins)
 }
 
 func (m model) renderRequestRow(req *LLMRequest, selected bool) string {

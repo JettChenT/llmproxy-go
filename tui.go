@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -11,6 +13,10 @@ import (
 type requestAddedMsg struct{ req *LLMRequest }
 type requestUpdatedMsg struct{ req *LLMRequest }
 type tickMsg time.Time
+type tapeSavedMsg struct{ filename string }
+type tapeSaveErrorMsg struct{ err error }
+type tapePlayMsg struct{}
+type tapeRealtimeTickMsg struct{}
 
 // TUI Model
 type model struct {
@@ -32,14 +38,44 @@ type model struct {
 	numBuffer     string // Accumulates digits for count prefix (e.g., "10" in "10j")
 	commandMode   bool   // True when entering a : command
 	commandBuffer string // Accumulates the command after :
+
+	// Tape mode
+	tape             *Tape     // Loaded tape for playback
+	tapeMode         bool      // True when viewing a tape
+	tapePlaying      bool      // True when auto-playing tape
+	tapeSpeed        int       // Playback speed multiplier (1, 2, 4, 8)
+	tapeRealtime     bool      // True for real-time playback, false for step-through
+	tapePlayStart    time.Time // Wall clock time when playback started
+	tapePlayStartPos time.Time // Tape position when playback started
+	saveTapeFile     string    // File being recorded to (if any)
+
+	// Save dialog
+	showSaveDialog  bool
+	saveFilename    string
+	saveMessage     string
+	saveMessageTime time.Time
 }
 
-func initialModel(listenAddr, targetURL string) model {
+func initialModel(listenAddr, targetURL string, saveTapeFile string) model {
 	return model{
 		requests:     make([]*LLMRequest, 0),
 		listenAddr:   listenAddr,
 		targetURL:    targetURL,
-		followLatest: false, // Start with follow mode off
+		followLatest: false,
+		tapeSpeed:    1,
+		saveTapeFile: saveTapeFile,
+	}
+}
+
+func initialTapeModel(tape *Tape) model {
+	return model{
+		requests:     tape.Requests,
+		tape:         tape,
+		tapeMode:     true,
+		followLatest: false,
+		tapeSpeed:    1,
+		listenAddr:   tape.Session.ListenAddr,
+		targetURL:    tape.Session.TargetURL,
 	}
 }
 
@@ -53,12 +89,59 @@ func tickCmd() tea.Cmd {
 	})
 }
 
+func tapePlayCmd() tea.Cmd {
+	return tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
+		return tapePlayMsg{}
+	})
+}
+
+func tapeRealtimeTickCmd() tea.Cmd {
+	return tea.Tick(16*time.Millisecond, func(t time.Time) tea.Msg {
+		return tapeRealtimeTickMsg{}
+	})
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		key := msg.String()
+
+		// Handle save dialog mode
+		if m.showSaveDialog {
+			switch key {
+			case "esc":
+				m.showSaveDialog = false
+				m.saveFilename = ""
+			case "enter":
+				if m.saveFilename != "" {
+					filename := m.saveFilename
+					if filepath.Ext(filename) == "" {
+						filename += ".tape"
+					}
+					go func() {
+						err := SaveSessionToTape(filename, m.listenAddr, m.targetURL)
+						if err != nil {
+							program.Send(tapeSaveErrorMsg{err: err})
+						} else {
+							program.Send(tapeSavedMsg{filename: filename})
+						}
+					}()
+					m.showSaveDialog = false
+					m.saveFilename = ""
+				}
+			case "backspace":
+				if len(m.saveFilename) > 0 {
+					m.saveFilename = m.saveFilename[:len(m.saveFilename)-1]
+				}
+			default:
+				if len(key) == 1 {
+					m.saveFilename += key
+				}
+			}
+			return m, nil
+		}
 
 		// Handle command mode (after pressing :)
 		if m.commandMode {
@@ -96,12 +179,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Handle number prefix for vim-style navigation (e.g., 10j, 5k)
+		// In tape mode, let '0' pass through for "jump to start" functionality
 		if !m.showDetail && len(key) == 1 && key[0] >= '0' && key[0] <= '9' {
-			// Don't allow leading zeros unless it's the only digit
-			if key != "0" || m.numBuffer != "" {
+			// In tape mode, '0' with empty buffer means "jump to start"
+			if m.tapeMode && key == "0" && m.numBuffer == "" {
+				// Fall through to handle '0' in the switch below
+			} else if key != "0" || m.numBuffer != "" {
 				m.numBuffer += key
+				return m, nil
+			} else {
+				// '0' with empty buffer in non-tape mode - ignore
+				return m, nil
 			}
-			return m, nil
 		}
 
 		// Get the count from numBuffer (default to 1)
@@ -127,6 +216,112 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.showDetail {
 				m.commandMode = true
 				m.commandBuffer = ""
+			}
+
+		case "s", "S":
+			// Save tape (only in live mode, not tape playback)
+			if !m.showDetail && !m.tapeMode && len(m.requests) > 0 {
+				m.showSaveDialog = true
+				m.saveFilename = fmt.Sprintf("session-%s.tape", time.Now().Format("20060102-150405"))
+			}
+
+		// Tape playback controls
+		case " ":
+			// Space toggles play/pause in tape mode
+			if m.tapeMode && !m.showDetail {
+				m.tapePlaying = !m.tapePlaying
+				if m.tapePlaying {
+					// Enable follow mode when playing starts
+					m.followLatest = true
+					if len(m.requests) > 0 {
+						m.cursor = len(m.requests) - 1
+					}
+					// Record playback start for real-time mode
+					m.tapePlayStart = time.Now()
+					m.tapePlayStartPos = m.tape.CurrentTime
+					if m.tapeRealtime {
+						cmds = append(cmds, tapeRealtimeTickCmd())
+					} else {
+						cmds = append(cmds, tapePlayCmd())
+					}
+				}
+			}
+
+		case "r":
+			// Toggle between realtime and step-through playback mode
+			if m.tapeMode && !m.showDetail {
+				m.tapeRealtime = !m.tapeRealtime
+				// If currently playing, restart with new mode
+				if m.tapePlaying {
+					m.tapePlayStart = time.Now()
+					m.tapePlayStartPos = m.tape.CurrentTime
+				}
+			}
+
+		case "[":
+			// Step backward in tape mode
+			if m.tapeMode && !m.showDetail && m.tape != nil {
+				m.tape.StepBackward()
+				m.requests = m.tape.GetRequestsAtTime(m.tape.CurrentTime)
+				m.tapePlaying = false
+				// Follow to latest if in follow mode
+				if m.followLatest && len(m.requests) > 0 {
+					m.cursor = len(m.requests) - 1
+				}
+				if m.cursor >= len(m.requests) {
+					m.cursor = max(0, len(m.requests)-1)
+				}
+			}
+
+		case "]":
+			// Step forward in tape mode
+			if m.tapeMode && !m.showDetail && m.tape != nil {
+				m.tape.StepForward()
+				m.requests = m.tape.GetRequestsAtTime(m.tape.CurrentTime)
+				m.tapePlaying = false
+				// Follow to latest if in follow mode
+				if m.followLatest && len(m.requests) > 0 {
+					m.cursor = len(m.requests) - 1
+				}
+				if m.cursor >= len(m.requests) {
+					m.cursor = max(0, len(m.requests)-1)
+				}
+			}
+
+		case "-", "_":
+			// Decrease playback speed
+			if m.tapeMode && !m.showDetail {
+				if m.tapeSpeed > 1 {
+					m.tapeSpeed /= 2
+				}
+			}
+
+		case "=", "+":
+			// Increase playback speed
+			if m.tapeMode && !m.showDetail {
+				if m.tapeSpeed < 16 {
+					m.tapeSpeed *= 2
+				}
+			}
+
+		case "0":
+			// Jump to start in tape mode (only when not entering a number prefix)
+			if m.tapeMode && !m.showDetail && m.tape != nil && m.numBuffer == "" {
+				m.tape.SeekToPercent(0)
+				m.requests = m.tape.GetRequestsAtTime(m.tape.CurrentTime)
+				m.tapePlaying = false
+				m.cursor = 0
+			}
+
+		case "$":
+			// Jump to end in tape mode
+			if m.tapeMode && !m.showDetail && m.tape != nil {
+				m.tape.SeekToPercent(1)
+				m.requests = m.tape.GetRequestsAtTime(m.tape.CurrentTime)
+				m.tapePlaying = false
+				if len(m.requests) > 0 {
+					m.cursor = len(m.requests) - 1
+				}
 			}
 
 		case "up", "k":
@@ -163,6 +358,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "f":
 			// Toggle follow mode (auto-scroll to newest at bottom)
+			// Works in both live mode and tape mode
 			if !m.showDetail {
 				m.followLatest = !m.followLatest
 				if m.followLatest && len(m.requests) > 0 {
@@ -295,7 +491,83 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.SetContent(m.renderTabContent())
 		}
 
+	case tapeSavedMsg:
+		m.saveMessage = fmt.Sprintf("✓ Saved to %s", msg.filename)
+		m.saveMessageTime = time.Now()
+
+	case tapeSaveErrorMsg:
+		m.saveMessage = fmt.Sprintf("✗ Error: %v", msg.err)
+		m.saveMessageTime = time.Now()
+
+	case tapePlayMsg:
+		// Step-through playback mode (advance event by event)
+		if m.tapeMode && m.tapePlaying && m.tape != nil && !m.tapeRealtime {
+			// Advance by speed multiplier
+			for i := 0; i < m.tapeSpeed; i++ {
+				if !m.tape.StepForward() {
+					m.tapePlaying = false
+					break
+				}
+			}
+			m.requests = m.tape.GetRequestsAtTime(m.tape.CurrentTime)
+
+			// Auto-follow to latest request when playing
+			if m.followLatest && len(m.requests) > 0 {
+				m.cursor = len(m.requests) - 1
+			}
+			// Clamp cursor to valid range
+			if m.cursor >= len(m.requests) {
+				m.cursor = max(0, len(m.requests)-1)
+			}
+
+			if m.tapePlaying && !m.tapeRealtime {
+				cmds = append(cmds, tapePlayCmd())
+			}
+		}
+
+	case tapeRealtimeTickMsg:
+		// Real-time playback mode (play at actual recorded speed)
+		if m.tapeMode && m.tapePlaying && m.tape != nil && m.tapeRealtime {
+			// Calculate where we should be in the tape based on elapsed wall time
+			elapsed := time.Since(m.tapePlayStart)
+			// Apply speed multiplier to elapsed time
+			scaledElapsed := time.Duration(float64(elapsed) * float64(m.tapeSpeed))
+			targetTime := m.tapePlayStartPos.Add(scaledElapsed)
+
+			// Don't go past the end
+			if targetTime.After(m.tape.EndTime) {
+				targetTime = m.tape.EndTime
+				m.tapePlaying = false
+			}
+
+			m.tape.SeekToTime(targetTime)
+			m.requests = m.tape.GetRequestsAtTime(m.tape.CurrentTime)
+
+			// Auto-follow to latest request when playing
+			if m.followLatest && len(m.requests) > 0 {
+				m.cursor = len(m.requests) - 1
+			}
+			// Clamp cursor to valid range
+			if m.cursor >= len(m.requests) {
+				m.cursor = max(0, len(m.requests)-1)
+			}
+
+			if m.tapePlaying && m.tapeRealtime {
+				cmds = append(cmds, tapeRealtimeTickCmd())
+			}
+		}
+
 	case tickMsg:
+		// In tape mode, don't sync with global state
+		if m.tapeMode {
+			cmds = append(cmds, tickCmd())
+			// Clear save message after 3 seconds
+			if m.saveMessage != "" && time.Since(m.saveMessageTime) > 3*time.Second {
+				m.saveMessage = ""
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		// Refresh the view from global state
 		requestsMu.RLock()
 		newRequests := make([]*LLMRequest, len(requests))
@@ -308,6 +580,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Clamp cursor to valid range
 		if m.cursor >= len(m.requests) {
 			m.cursor = max(0, len(m.requests)-1)
+		}
+
+		// Clear save message after 3 seconds
+		if m.saveMessage != "" && time.Since(m.saveMessageTime) > 3*time.Second {
+			m.saveMessage = ""
 		}
 
 		cmds = append(cmds, tickCmd())
@@ -325,6 +602,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) View() string {
 	if !m.ready {
 		return "Initializing..."
+	}
+
+	if m.showSaveDialog {
+		return m.renderSaveDialog()
 	}
 
 	if m.showDetail {

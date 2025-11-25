@@ -22,6 +22,7 @@ var (
 	requestsMu sync.RWMutex
 	requestID  int
 	program    *tea.Program
+	tapeWriter *TapeWriter // Global tape writer for recording
 )
 
 // Response recorder for capturing response
@@ -190,6 +191,11 @@ func startProxy(listenAddr, targetURL string) {
 			program.Send(requestAddedMsg{req: req})
 		}
 
+		// Write to tape if recording
+		if tapeWriter != nil {
+			tapeWriter.WriteRequestStart(req)
+		}
+
 		// Proxy the request
 		recorder := newResponseRecorder(w)
 		proxy.ServeHTTP(recorder, r)
@@ -222,6 +228,11 @@ func startProxy(listenAddr, targetURL string) {
 
 		// Extract token usage from response (non-blocking)
 		go extractTokenUsage(req, decompressedBody)
+
+		// Write to tape if recording
+		if tapeWriter != nil {
+			tapeWriter.WriteRequestComplete(req)
+		}
 
 		// Notify TUI
 		if program != nil {
