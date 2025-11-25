@@ -55,7 +55,7 @@ func (m model) renderSaveDialog() string {
 	)
 }
 
-func (m model) renderListView() string {
+func (m *model) renderListView() string {
 	var b strings.Builder
 
 	// Header
@@ -76,38 +76,50 @@ func (m model) renderListView() string {
 	}
 
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Center, header, "  ", proxyInfo))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
 
-	// Column headers (must match widths in renderRequestRow)
-	headerRow := lipgloss.NewStyle().
-		Foreground(dimColor).
-		Bold(true).
-		Padding(0, 1).
-		Render(fmt.Sprintf("%-6s %-12s %-26s %-6s %-10s %-12s %-10s %-10s %-10s",
-			"#", "STATUS", "MODEL", "CODE", "SIZE", "DURATION", "IN TOK", "OUT TOK", "COST"))
-	b.WriteString(headerRow)
+	// Search bar
+	if m.searchMode {
+		searchPrompt := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render("/")
+		searchInput := lipgloss.NewStyle().Foreground(lipgloss.Color("#E2E8F0")).Render(m.searchQuery + "█")
+		searchHint := lipgloss.NewStyle().Foreground(dimColor).Render(" (enter to confirm, esc to cancel)")
+		b.WriteString(searchPrompt + searchInput + searchHint)
+	} else if m.searchQuery != "" {
+		// Show active search filter
+		searchIndicator := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(
+			fmt.Sprintf("🔍 \"%s\"", m.searchQuery))
+		clearHint := lipgloss.NewStyle().Foreground(dimColor).Render(" (esc to clear)")
+		b.WriteString(searchIndicator + clearHint)
+	}
+	b.WriteString("\n")
+
+	// Column headers with sort indicators (clickable)
+	b.WriteString(m.renderSortableHeaders())
 	b.WriteString("\n")
 	b.WriteString(lipgloss.NewStyle().Foreground(borderColor).Render(strings.Repeat("─", m.width-2)))
 	b.WriteString("\n")
 
+	// Get filtered and sorted requests
+	displayRequests := m.getDisplayRequests()
+
 	// Request list (chronological: oldest at top, newest at bottom)
-	listHeight := m.height - 8
+	listHeight := m.height - 9 // Adjusted for search bar
 	start := 0
-	end := len(m.requests)
+	end := len(displayRequests)
 
 	// Scroll to keep cursor visible
-	if len(m.requests) > listHeight {
+	if len(displayRequests) > listHeight {
 		if m.cursor >= listHeight {
 			start = m.cursor - listHeight + 1
 		}
 		end = start + listHeight
-		if end > len(m.requests) {
-			end = len(m.requests)
+		if end > len(displayRequests) {
+			end = len(displayRequests)
 		}
 	}
 
 	for i := start; i < end; i++ {
-		req := m.requests[i]
+		req := displayRequests[i]
 		row := m.renderRequestRow(req, i == m.cursor)
 		b.WriteString(row)
 		b.WriteString("\n")
@@ -179,7 +191,7 @@ func (m model) renderListView() string {
 				fmt.Sprintf(" %s / %s", formatDuration(elapsed), formatDuration(total)))
 		}
 
-		help = helpStyle.Render("space play • r mode • [/] step • -/+ speed • 0/$ start/end • f follow • q quit") + playIndicator + followIndicator + " " + progressBar + timeDisplay
+		help = helpStyle.Render("space play • / search • [/] step • -/+ speed • f follow • q quit") + playIndicator + followIndicator + " " + progressBar + timeDisplay
 	} else {
 		// Live mode help
 		followIndicator := ""
@@ -190,27 +202,91 @@ func (m model) renderListView() string {
 		if m.numBuffer != "" {
 			numIndicator = lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(fmt.Sprintf(" [%s]", m.numBuffer))
 		}
-		help = helpStyle.Render("↑/↓/j/k navigate • enter select • :N goto • g/G top/bottom • f follow • s save • q quit") + followIndicator + numIndicator
+		help = helpStyle.Render("↑/↓ nav • / search • enter select • g/G top/bot • f follow • s save • q quit") + followIndicator + numIndicator
 	}
 
-	// Calculate total cost across all requests
+	// Calculate total cost across display requests
 	totalCost := 0.0
-	for _, req := range m.requests {
+	for _, req := range displayRequests {
 		totalCost += req.Cost
 	}
 
 	// Build status with request count and total cost
 	var statusText string
-	if totalCost > 0 {
-		statusText = fmt.Sprintf("%d requests • $%.4f", len(m.requests), totalCost)
+	if m.searchQuery != "" {
+		// Show filtered count
+		if totalCost > 0 {
+			statusText = fmt.Sprintf("%d/%d requests • $%.4f", len(displayRequests), len(m.requests), totalCost)
+		} else {
+			statusText = fmt.Sprintf("%d/%d requests", len(displayRequests), len(m.requests))
+		}
 	} else {
-		statusText = fmt.Sprintf("%d requests", len(m.requests))
+		if totalCost > 0 {
+			statusText = fmt.Sprintf("%d requests • $%.4f", len(m.requests), totalCost)
+		} else {
+			statusText = fmt.Sprintf("%d requests", len(m.requests))
+		}
 	}
 	count := statusBarStyle.Render(statusText)
 	footer := lipgloss.JoinHorizontal(lipgloss.Bottom, help, strings.Repeat(" ", max(0, m.width-lipgloss.Width(help)-lipgloss.Width(count)-2)), count)
 	b.WriteString(footer)
 
-	return b.String()
+	return zone.Scan(b.String())
+}
+
+// renderSortableHeaders renders clickable column headers with sort indicators
+func (m *model) renderSortableHeaders() string {
+	// Column widths (must match renderRequestRow)
+	const (
+		colID       = 6
+		colStatus   = 12
+		colModel    = 26
+		colCode     = 6
+		colSize     = 10
+		colDuration = 12
+		colInTok    = 10
+		colOutTok   = 10
+		colCost     = 10
+	)
+
+	// Helper to render a header with sort indicator
+	renderHeader := func(label string, width int, field SortField, zoneID string) string {
+		indicator := " "
+		style := lipgloss.NewStyle().Foreground(dimColor).Bold(true)
+
+		if m.sortField == field {
+			style = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+			if m.sortDirection == SortAsc {
+				indicator = "▲"
+			} else {
+				indicator = "▼"
+			}
+		}
+
+		// Truncate label if needed to fit indicator
+		maxLabelLen := width - 2
+		if len(label) > maxLabelLen {
+			label = label[:maxLabelLen]
+		}
+
+		content := fmt.Sprintf("%-*s%s", width-1, label, indicator)
+		return zone.Mark(zoneID, style.Render(content))
+	}
+
+	headers := []string{
+		renderHeader("#", colID, SortByID, "sort-id"),
+		renderHeader("STATUS", colStatus, SortByStatus, "sort-status"),
+		renderHeader("MODEL", colModel, SortByModel, "sort-model"),
+		renderHeader("CODE", colCode, SortByCode, "sort-code"),
+		renderHeader("SIZE", colSize, SortBySize, "sort-size"),
+		renderHeader("DURATION", colDuration, SortByDuration, "sort-duration"),
+		renderHeader("IN TOK", colInTok, SortByInputTokens, "sort-intok"),
+		renderHeader("OUT TOK", colOutTok, SortByOutputTokens, "sort-outtok"),
+		renderHeader("COST", colCost, SortByCost, "sort-cost"),
+	}
+
+	row := lipgloss.NewStyle().Padding(0, 1).Render(strings.Join(headers, " "))
+	return row
 }
 
 // renderProgressBar renders a visual progress bar

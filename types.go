@@ -101,3 +101,27 @@ const (
 	TabRawInput
 	TabRawOutput
 )
+
+// SortField represents fields the request list can be sorted by
+type SortField int
+
+const (
+	SortByNone SortField = iota
+	SortByID
+	SortByStatus
+	SortByModel
+	SortByCode
+	SortBySize
+	SortByDuration
+	SortByInputTokens
+	SortByOutputTokens
+	SortByCost
+)
+
+// SortDirection represents ascending or descending sort
+type SortDirection int
+
+const (
+	SortAsc SortDirection = iota
+	SortDesc
+)

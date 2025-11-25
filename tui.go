@@ -40,6 +40,14 @@ type model struct {
 	commandMode   bool   // True when entering a : command
 	commandBuffer string // Accumulates the command after :
 
+	// Search and sort
+	searchMode         bool          // True when in search input mode
+	searchQuery        string        // Current search query
+	filteredRequests   []*LLMRequest // Requests matching search query
+	sortField          SortField     // Current sort field
+	sortDirection      SortDirection // Current sort direction
+	searchIndexCache   map[int]string // Cache of searchable text per request ID
+
 	// Tape mode
 	tape             *Tape     // Loaded tape for playback
 	tapeMode         bool      // True when viewing a tape
@@ -71,6 +79,9 @@ func initialModel(listenAddr, targetURL string, saveTapeFile string) model {
 		tapeSpeed:         1,
 		saveTapeFile:      saveTapeFile,
 		collapsedMessages: make(map[int]bool),
+		sortField:         SortByID,
+		sortDirection:     SortAsc,
+		searchIndexCache:  make(map[int]string),
 	}
 }
 
@@ -85,6 +96,9 @@ func initialTapeModel(tape *Tape) model {
 		listenAddr:        tape.Session.ListenAddr,
 		targetURL:         tape.Session.TargetURL,
 		collapsedMessages: make(map[int]bool),
+		sortField:         SortByID,
+		sortDirection:     SortAsc,
+		searchIndexCache:  make(map[int]string),
 	}
 }
 
@@ -164,7 +178,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.commandBuffer != "" {
 					if targetID, err := parseNumber(m.commandBuffer); err == nil && targetID > 0 {
 						// Find request with matching ID
-						for i, req := range m.requests {
+						displayRequests := m.getDisplayRequests()
+						for i, req := range displayRequests {
 							if req.ID == targetID {
 								m.cursor = i
 								m.followLatest = false
@@ -183,6 +198,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Only accept digits for the goto command
 				if len(key) == 1 && key[0] >= '0' && key[0] <= '9' {
 					m.commandBuffer += key
+				}
+			}
+			return m, nil
+		}
+
+		// Handle search mode (after pressing /)
+		if m.searchMode {
+			switch key {
+			case "esc":
+				m.searchMode = false
+				// Don't clear search query - keep filter active
+			case "enter":
+				m.searchMode = false
+				m.filterRequests()
+				// Reset cursor if it's out of range
+				displayRequests := m.getDisplayRequests()
+				if m.cursor >= len(displayRequests) {
+					m.cursor = max(0, len(displayRequests)-1)
+				}
+			case "backspace":
+				if len(m.searchQuery) > 0 {
+					m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
+					m.filterRequests()
+				}
+			default:
+				if len(key) == 1 {
+					m.searchQuery += key
+					m.filterRequests()
 				}
 			}
 			return m, nil
@@ -335,6 +378,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "up", "k":
+			displayRequests := m.getDisplayRequests()
 			if !m.showDetail && m.cursor > 0 {
 				m.cursor -= count
 				if m.cursor < 0 {
@@ -342,12 +386,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.followLatest = false // Disable follow mode when manually navigating
 			}
+			// Clamp to display bounds
+			if m.cursor >= len(displayRequests) {
+				m.cursor = max(0, len(displayRequests)-1)
+			}
 
 		case "down", "j":
-			if !m.showDetail && m.cursor < len(m.requests)-1 {
+			displayRequests := m.getDisplayRequests()
+			if !m.showDetail && m.cursor < len(displayRequests)-1 {
 				m.cursor += count
-				if m.cursor >= len(m.requests) {
-					m.cursor = len(m.requests) - 1
+				if m.cursor >= len(displayRequests) {
+					m.cursor = len(displayRequests) - 1
 				}
 				m.followLatest = false // Disable follow mode when manually navigating
 			}
@@ -364,32 +413,41 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "G", "end":
+			displayRequests := m.getDisplayRequests()
 			if m.showDetail {
 				// Scroll to bottom of viewport and last message
 				m.viewport.GotoBottom()
 				if len(m.messagePositions) > 0 {
 					m.currentMsgIndex = len(m.messagePositions) - 1
 				}
-			} else if len(m.requests) > 0 {
+			} else if len(displayRequests) > 0 {
 				// Jump to newest (bottom) in list view
-				m.cursor = len(m.requests) - 1
+				m.cursor = len(displayRequests) - 1
 				m.followLatest = false
 			}
 
 		case "f":
 			// Toggle follow mode (auto-scroll to newest at bottom)
 			// Works in both live mode and tape mode
+			displayRequests := m.getDisplayRequests()
 			if !m.showDetail {
 				m.followLatest = !m.followLatest
-				if m.followLatest && len(m.requests) > 0 {
-					m.cursor = len(m.requests) - 1
+				if m.followLatest && len(displayRequests) > 0 {
+					m.cursor = len(displayRequests) - 1
 				}
 			}
 
+		case "/":
+			// Enter search mode
+			if !m.showDetail {
+				m.searchMode = true
+			}
+
 		case "enter":
-			if !m.showDetail && len(m.requests) > 0 && m.cursor < len(m.requests) {
+			displayRequests := m.getDisplayRequests()
+			if !m.showDetail && len(displayRequests) > 0 && m.cursor < len(displayRequests) {
 				m.showDetail = true
-				m.selected = m.requests[m.cursor]
+				m.selected = displayRequests[m.cursor]
 				m.selectedID = m.selected.ID
 				m.activeTab = TabMessages
 				// Reset message navigation state for new request
@@ -404,6 +462,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.showDetail {
 				m.showDetail = false
 				m.selected = nil
+			} else if m.searchQuery != "" {
+				// Clear search filter
+				m.searchQuery = ""
+				m.filteredRequests = nil
+				m.cursor = 0
 			}
 			m.numBuffer = "" // Clear any pending number
 
@@ -533,27 +596,51 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			} else if !m.showDetail {
-				// Handle mouse clicks in list view
-				// Header takes 4 lines (title + blank + column headers + separator)
-				headerLines := 4
-				clickedRow := msg.Y - headerLines
-				listHeight := m.height - 8
+				// Handle sort header clicks
+				sortHeaders := []struct {
+					zoneID string
+					field  SortField
+				}{
+					{"sort-id", SortByID},
+					{"sort-status", SortByStatus},
+					{"sort-model", SortByModel},
+					{"sort-code", SortByCode},
+					{"sort-size", SortBySize},
+					{"sort-duration", SortByDuration},
+					{"sort-intok", SortByInputTokens},
+					{"sort-outtok", SortByOutputTokens},
+					{"sort-cost", SortByCost},
+				}
 
+				for _, header := range sortHeaders {
+					if zone.Get(header.zoneID).InBounds(msg) {
+						m.toggleSort(header.field)
+						return m, nil
+					}
+				}
+
+				// Handle mouse clicks in list view
+				// Header takes 5 lines (title + search + column headers + separator + blank)
+				headerLines := 5
+				clickedRow := msg.Y - headerLines
+				listHeight := m.height - 9 // Adjusted for search bar
+
+				displayRequests := m.getDisplayRequests()
 				if clickedRow >= 0 && clickedRow < listHeight {
 					// Calculate the actual index based on scroll position
 					start := 0
-					if len(m.requests) > listHeight && m.cursor >= listHeight {
+					if len(displayRequests) > listHeight && m.cursor >= listHeight {
 						start = m.cursor - listHeight + 1
 					}
 
 					actualIndex := start + clickedRow
-					if actualIndex >= 0 && actualIndex < len(m.requests) {
+					if actualIndex >= 0 && actualIndex < len(displayRequests) {
 						m.cursor = actualIndex
 						m.followLatest = false
 
 						// Single click shows detail for better UX
 						m.showDetail = true
-						m.selected = m.requests[m.cursor]
+						m.selected = displayRequests[m.cursor]
 						m.selectedID = m.selected.ID
 						m.activeTab = TabMessages
 						m.viewport.SetContent(m.renderTabContent())
