@@ -41,12 +41,12 @@ type model struct {
 	commandBuffer string // Accumulates the command after :
 
 	// Search and sort
-	searchMode         bool          // True when in search input mode
-	searchQuery        string        // Current search query
-	filteredRequests   []*LLMRequest // Requests matching search query
-	sortField          SortField     // Current sort field
-	sortDirection      SortDirection // Current sort direction
-	searchIndexCache   map[int]string // Cache of searchable text per request ID
+	searchMode       bool           // True when in search input mode
+	searchQuery      string         // Current search query
+	filteredRequests []*LLMRequest  // Requests matching search query
+	sortField        SortField      // Current sort field
+	sortDirection    SortDirection  // Current sort direction
+	searchIndexCache map[int]string // Cache of searchable text per request ID
 
 	// Tape mode
 	tape             *Tape     // Loaded tape for playback
