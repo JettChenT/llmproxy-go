@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -215,12 +216,25 @@ func startProxy(listenAddr, targetURL string) {
 				time.Sleep(cachedEntry.Duration)
 			}
 
-			// Write cached response
+			// Write cached response headers, but skip headers that don't apply
+			// to the decompressed cached body
+			skipHeaders := map[string]bool{
+				"Content-Encoding":  true, // Body is stored decompressed
+				"Content-Length":    true, // Will set correct length below
+				"Transfer-Encoding": true, // Not chunked anymore
+				"Connection":        true, // Let Go handle this
+				"Keep-Alive":        true, // Let Go handle this
+			}
 			for k, v := range cachedEntry.ResponseHeaders {
+				if skipHeaders[k] {
+					continue
+				}
 				for _, val := range v {
 					w.Header().Add(k, val)
 				}
 			}
+			// Set correct Content-Length for the decompressed body
+			w.Header().Set("Content-Length", strconv.Itoa(len(cachedEntry.ResponseBody)))
 			w.WriteHeader(cachedEntry.StatusCode)
 			w.Write(cachedEntry.ResponseBody)
 
