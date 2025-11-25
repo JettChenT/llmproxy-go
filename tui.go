@@ -468,7 +468,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		viewportHeight := m.height - headerHeight - footerHeight - tabHeight - 4
 
 		// Pre-warm markdown renderer for message content width
-		InitMarkdownRenderer(m.width - 14)
+		// contentWidth = m.width - 10, textWidth = contentWidth - 6 = m.width - 16
+		InitMarkdownRenderer(m.width - 16)
 
 		if !m.ready {
 			m.viewport = viewport.New(m.width-4, viewportHeight)

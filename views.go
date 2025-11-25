@@ -446,12 +446,16 @@ func (m model) renderMessagesTab() string {
 
 	var b strings.Builder
 
+	// Content width for boxes (viewport width minus border/padding)
+	contentWidth := m.width - 10
+
 	// Request metadata
 	metaBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(accentColor).
 		Padding(0, 2).
-		MarginBottom(1)
+		MarginBottom(1).
+		MaxWidth(contentWidth)
 
 	meta := fmt.Sprintf("%s %s\n%s %s\n%s %.1f\n%s %d\n%s %v",
 		labelStyle.Render("Model:"), req.Model,
@@ -524,12 +528,14 @@ func (m model) renderMessagesTab() string {
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(roleColor).
 			Padding(1, 2).
-			Width(m.width - 8)
+			Width(contentWidth)
 
-		msgContent := fmt.Sprintf("%s\n\n%s", roleStyled, renderMarkdown(content, m.width-14))
+		// Text width inside the box (minus border and padding)
+		textWidth := contentWidth - 6
+		msgContent := fmt.Sprintf("%s\n\n%s", roleStyled, renderMarkdown(content, textWidth))
 
 		if msg.Name != "" {
-			msgContent = fmt.Sprintf("%s (%s)\n\n%s", roleStyled, msg.Name, renderMarkdown(content, m.width-14))
+			msgContent = fmt.Sprintf("%s (%s)\n\n%s", roleStyled, msg.Name, renderMarkdown(content, textWidth))
 		}
 
 		// Handle tool call ID for tool response messages
@@ -538,16 +544,16 @@ func (m model) renderMessagesTab() string {
 				Foreground(warningColor).
 				Italic(true).
 				Render(fmt.Sprintf("Response to: %s", msg.ToolCallID))
-			msgContent = fmt.Sprintf("%s\n%s\n\n%s", roleStyled, toolCallLabel, renderMarkdown(content, m.width-14))
+			msgContent = fmt.Sprintf("%s\n%s\n\n%s", roleStyled, toolCallLabel, renderMarkdown(content, textWidth))
 		}
 
 		// Handle tool calls in message
 		if len(msg.ToolCalls) > 0 {
 			msgContent = roleStyled + "\n\n"
 			if content != "" && content != "null" {
-				msgContent += renderMarkdown(content, m.width-14) + "\n\n"
+				msgContent += renderMarkdown(content, textWidth) + "\n\n"
 			}
-			msgContent += m.renderToolCalls(msg.ToolCalls)
+			msgContent += m.renderToolCalls(msg.ToolCalls, textWidth)
 		}
 
 		b.WriteString(msgBox.Render(msgContent))
@@ -575,12 +581,17 @@ func (m model) renderOutputTab() string {
 
 	var b strings.Builder
 
+	// Content width for boxes (viewport width minus border/padding)
+	contentWidth := m.width - 10
+	textWidth := contentWidth - 6
+
 	// Response metadata
 	metaBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(successColor).
 		Padding(0, 2).
-		MarginBottom(1)
+		MarginBottom(1).
+		MaxWidth(contentWidth)
 
 	meta := fmt.Sprintf("%s %s\n%s %s\n%s %d\n%s %d\n%s %d",
 		labelStyle.Render("ID:"), resp.ID,
@@ -629,7 +640,7 @@ func (m model) renderOutputTab() string {
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(borderColor).
 			Padding(1, 2).
-			Width(m.width - 8)
+			Width(contentWidth)
 
 		var msgContent string
 		hasToolCalls := len(choice.Message.ToolCalls) > 0
@@ -638,13 +649,13 @@ func (m model) renderOutputTab() string {
 			// Tool call response
 			msgContent = roleStyled + "\n\n"
 			if content != "" && content != "null" && content != "\"\"" {
-				msgContent += renderMarkdown(content, m.width-14) + "\n\n"
+				msgContent += renderMarkdown(content, textWidth) + "\n\n"
 			}
-			msgContent += m.renderToolCalls(choice.Message.ToolCalls)
+			msgContent += m.renderToolCalls(choice.Message.ToolCalls, textWidth)
 			msgContent += "\n\n" + finishInfo
 		} else {
 			// Regular text response
-			msgContent = fmt.Sprintf("%s\n\n%s\n\n%s", roleStyled, renderMarkdown(content, m.width-14), finishInfo)
+			msgContent = fmt.Sprintf("%s\n\n%s\n\n%s", roleStyled, renderMarkdown(content, textWidth), finishInfo)
 		}
 
 		b.WriteString(msgBox.Render(msgContent))
@@ -812,7 +823,7 @@ func renderJSONBody(data []byte, title string) string {
 }
 
 // renderToolCalls renders tool calls in a visually appealing format
-func (m model) renderToolCalls(toolCalls []ToolCall) string {
+func (m model) renderToolCalls(toolCalls []ToolCall, maxWidth int) string {
 	var b strings.Builder
 
 	toolCallHeader := lipgloss.NewStyle().
