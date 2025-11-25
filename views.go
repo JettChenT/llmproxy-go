@@ -33,14 +33,23 @@ func (m model) renderListView() string {
 	b.WriteString(lipgloss.NewStyle().Foreground(borderColor).Render(strings.Repeat("─", m.width-2)))
 	b.WriteString("\n")
 
-	// Request list
+	// Request list (chronological: oldest at top, newest at bottom)
 	listHeight := m.height - 8
 	start := 0
-	if m.cursor >= listHeight {
-		start = m.cursor - listHeight + 1
+	end := len(m.requests)
+
+	// Scroll to keep cursor visible
+	if len(m.requests) > listHeight {
+		if m.cursor >= listHeight {
+			start = m.cursor - listHeight + 1
+		}
+		end = start + listHeight
+		if end > len(m.requests) {
+			end = len(m.requests)
+		}
 	}
 
-	for i := start; i < len(m.requests) && i < start+listHeight; i++ {
+	for i := start; i < end; i++ {
 		req := m.requests[i]
 		row := m.renderRequestRow(req, i == m.cursor)
 		b.WriteString(row)
@@ -48,7 +57,8 @@ func (m model) renderListView() string {
 	}
 
 	// Fill empty space
-	for i := len(m.requests); i < start+listHeight; i++ {
+	visibleCount := end - start
+	for i := visibleCount; i < listHeight; i++ {
 		b.WriteString("\n")
 	}
 
@@ -72,7 +82,7 @@ func (m model) renderListView() string {
 	if m.numBuffer != "" {
 		numIndicator = lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(fmt.Sprintf(" [%s]", m.numBuffer))
 	}
-	help := helpStyle.Render("↑/↓/j/k navigate • :N goto • g/G top/bottom • f follow • enter select • q quit") + followIndicator + numIndicator
+	help := helpStyle.Render("↑/↓/j/k navigate • click/enter select • :N goto • g/G top/bottom • f follow • q quit") + followIndicator + numIndicator
 
 	// Calculate total cost across all requests
 	totalCost := 0.0

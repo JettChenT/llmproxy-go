@@ -44,7 +44,7 @@ func initialModel(listenAddr, targetURL string) model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(tickCmd(), tea.EnterAltScreen)
+	return tea.Batch(tickCmd(), tea.EnterAltScreen, tea.EnableMouseCellMotion)
 }
 
 func tickCmd() tea.Cmd {
@@ -148,25 +148,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "g", "home":
-			// Jump to latest (top)
+			// Jump to oldest (top)
 			if !m.showDetail {
 				m.cursor = 0
 				m.followLatest = false
 			}
 
 		case "G", "end":
-			// Jump to oldest (bottom)
+			// Jump to newest (bottom)
 			if !m.showDetail && len(m.requests) > 0 {
 				m.cursor = len(m.requests) - 1
 				m.followLatest = false
 			}
 
 		case "f":
-			// Toggle follow mode (auto-scroll to latest)
+			// Toggle follow mode (auto-scroll to newest at bottom)
 			if !m.showDetail {
 				m.followLatest = !m.followLatest
-				if m.followLatest {
-					m.cursor = 0
+				if m.followLatest && len(m.requests) > 0 {
+					m.cursor = len(m.requests) - 1
 				}
 			}
 
@@ -230,6 +230,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case tea.MouseMsg:
+		// Handle mouse clicks in list view
+		if !m.showDetail && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			// Calculate which row was clicked
+			// Header takes 4 lines (title + blank + column headers + separator)
+			headerLines := 4
+			clickedRow := msg.Y - headerLines
+			listHeight := m.height - 8
+
+			if clickedRow >= 0 && clickedRow < listHeight {
+				// Calculate the actual index based on scroll position
+				start := 0
+				if len(m.requests) > listHeight && m.cursor >= listHeight {
+					start = m.cursor - listHeight + 1
+				}
+
+				actualIndex := start + clickedRow
+				if actualIndex >= 0 && actualIndex < len(m.requests) {
+					m.cursor = actualIndex
+					m.followLatest = false
+
+					// Single click shows detail for better UX
+					m.showDetail = true
+					m.selected = m.requests[m.cursor]
+					m.selectedID = m.selected.ID
+					m.activeTab = TabMessages
+					m.viewport.SetContent(m.renderTabContent())
+					m.viewport.GotoTop()
+				}
+			}
+		}
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -249,16 +281,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case requestAddedMsg:
-		// When a new request is added at the front, increment cursor to keep pointing at same item
-		// unless we're in follow mode or at position 0
-		if !m.followLatest && m.cursor >= 0 && len(m.requests) > 0 {
-			m.cursor++
-		}
-		m.requests = append([]*LLMRequest{msg.req}, m.requests...)
+		// Append new requests to the end (chronological order: oldest at top, newest at bottom)
+		m.requests = append(m.requests, msg.req)
 
-		// In follow mode, stay at the top
+		// In follow mode, jump to the newest (last) item
 		if m.followLatest {
-			m.cursor = 0
+			m.cursor = len(m.requests) - 1
 		}
 
 	case requestUpdatedMsg:

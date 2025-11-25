@@ -182,7 +182,7 @@ func startProxy(listenAddr, targetURL string) {
 			ProviderID:           providerID,
 			EstimatedInputTokens: estimatedTokens,
 		}
-		requests = append([]*LLMRequest{req}, requests...)
+		requests = append(requests, req)
 		requestsMu.Unlock()
 
 		// Notify TUI
