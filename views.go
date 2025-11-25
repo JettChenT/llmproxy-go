@@ -395,11 +395,14 @@ func (m model) renderDetailView() string {
 	tabs := []string{"Messages", "Output", "Raw Input", "Raw Output"}
 	var tabRow []string
 	for i, tab := range tabs {
+		tabZoneID := fmt.Sprintf("tab-%d", i)
+		var tabContent string
 		if Tab(i) == m.activeTab {
-			tabRow = append(tabRow, activeTabStyle.Render(fmt.Sprintf("%d. %s", i+1, tab)))
+			tabContent = activeTabStyle.Render(fmt.Sprintf("%d. %s", i+1, tab))
 		} else {
-			tabRow = append(tabRow, inactiveTabStyle.Render(fmt.Sprintf("%d. %s", i+1, tab)))
+			tabContent = inactiveTabStyle.Render(fmt.Sprintf("%d. %s", i+1, tab))
 		}
+		tabRow = append(tabRow, zone.Mark(tabZoneID, tabContent))
 	}
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, tabRow...))
 	b.WriteString("\n\n")

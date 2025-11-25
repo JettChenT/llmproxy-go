@@ -79,6 +79,7 @@ func initialTapeModel(tape *Tape) model {
 		requests:          tape.Requests,
 		tape:              tape,
 		tapeMode:          true,
+		tapeRealtime:      true,
 		followLatest:      false,
 		tapeSpeed:         1,
 		listenAddr:        tape.Session.ListenAddr,
@@ -503,19 +504,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseMsg:
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-			if m.showDetail && m.activeTab == TabMessages {
+			if m.showDetail {
+				// Handle tab clicks in detail view
+				for i := 0; i < 4; i++ {
+					tabZoneID := fmt.Sprintf("tab-%d", i)
+					if zone.Get(tabZoneID).InBounds(msg) {
+						m.activeTab = Tab(i)
+						m.viewport.SetContent(m.renderTabContent())
+						m.viewport.GotoTop()
+						return m, nil
+					}
+				}
+
 				// Handle clicks in Messages tab for collapsing messages using bubblezone
 				// Only the header (role line) is clickable, so this works even when partially scrolled
-				for i := 0; i < len(m.messagePositions); i++ {
-					msgZoneID := fmt.Sprintf("msg-%d", i)
-					if zone.Get(msgZoneID).InBounds(msg) {
-						if m.collapsedMessages == nil {
-							m.collapsedMessages = make(map[int]bool)
+				if m.activeTab == TabMessages {
+					for i := 0; i < len(m.messagePositions); i++ {
+						msgZoneID := fmt.Sprintf("msg-%d", i)
+						if zone.Get(msgZoneID).InBounds(msg) {
+							if m.collapsedMessages == nil {
+								m.collapsedMessages = make(map[int]bool)
+							}
+							m.collapsedMessages[i] = !m.collapsedMessages[i]
+							m.currentMsgIndex = i
+							m.viewport.SetContent(m.renderTabContent())
+							break
 						}
-						m.collapsedMessages[i] = !m.collapsedMessages[i]
-						m.currentMsgIndex = i
-						m.viewport.SetContent(m.renderTabContent())
-						break
 					}
 				}
 			} else if !m.showDetail {
