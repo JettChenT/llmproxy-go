@@ -34,14 +34,16 @@ type Provider struct {
 
 // ModelsDB holds the models.dev data
 type ModelsDB struct {
-	mu        sync.RWMutex
-	providers map[string]Provider
-	loaded    bool
-	lastFetch time.Time
+	mu           sync.RWMutex
+	providers    map[string]Provider
+	globalModels map[string]ModelCost // Global slug -> cost mapping for fallback
+	loaded       bool
+	lastFetch    time.Time
 }
 
 var modelsDB = &ModelsDB{
-	providers: make(map[string]Provider),
+	providers:    make(map[string]Provider),
+	globalModels: make(map[string]ModelCost),
 }
 
 const modelsDevURL = "https://models.dev/api.json"
@@ -78,8 +80,21 @@ func fetchModelsDB() error {
 		return err
 	}
 
+	// Build global slug -> cost mapping for fallback lookups
+	globalModels := make(map[string]ModelCost)
+	for _, provider := range providers {
+		for slug, model := range provider.Models {
+			// Only add if not already present (first provider wins)
+			// or if the new cost is non-zero and existing is zero
+			if existing, ok := globalModels[slug]; !ok || (existing.Input == 0 && model.Cost.Input > 0) {
+				globalModels[slug] = model.Cost
+			}
+		}
+	}
+
 	modelsDB.mu.Lock()
 	modelsDB.providers = providers
+	modelsDB.globalModels = globalModels
 	modelsDB.loaded = true
 	modelsDB.lastFetch = time.Now()
 	modelsDB.mu.Unlock()
@@ -149,21 +164,53 @@ func GetModelCost(providerID, modelSlug string) *ModelCost {
 		return nil
 	}
 
-	provider, ok := modelsDB.providers[providerID]
-	if !ok {
-		return nil
+	// Try provider-specific lookup first if providerID is available
+	if providerID != "" {
+		if provider, ok := modelsDB.providers[providerID]; ok {
+			// Try exact match first
+			if model, ok := provider.Models[modelSlug]; ok {
+				return &model.Cost
+			}
+
+			// Try without provider prefix (e.g., "openai/gpt-4" -> "gpt-4")
+			if idx := strings.Index(modelSlug, "/"); idx != -1 {
+				shortSlug := modelSlug[idx+1:]
+				if model, ok := provider.Models[shortSlug]; ok {
+					return &model.Cost
+				}
+			}
+
+			// Try with common variations
+			variations := []string{
+				strings.ReplaceAll(modelSlug, ".", "-"),
+				strings.ReplaceAll(modelSlug, "-", "."),
+				strings.ToLower(modelSlug),
+			}
+
+			for _, variant := range variations {
+				if model, ok := provider.Models[variant]; ok {
+					return &model.Cost
+				}
+			}
+		}
 	}
 
+	// Fallback: use global slug -> cost mapping
+	return lookupGlobalModelCost(modelSlug)
+}
+
+// lookupGlobalModelCost searches the global model mapping for cost info
+func lookupGlobalModelCost(modelSlug string) *ModelCost {
 	// Try exact match first
-	if model, ok := provider.Models[modelSlug]; ok {
-		return &model.Cost
+	if cost, ok := modelsDB.globalModels[modelSlug]; ok {
+		return &cost
 	}
 
 	// Try without provider prefix (e.g., "openai/gpt-4" -> "gpt-4")
 	if idx := strings.Index(modelSlug, "/"); idx != -1 {
 		shortSlug := modelSlug[idx+1:]
-		if model, ok := provider.Models[shortSlug]; ok {
-			return &model.Cost
+		if cost, ok := modelsDB.globalModels[shortSlug]; ok {
+			return &cost
 		}
 	}
 
@@ -175,8 +222,8 @@ func GetModelCost(providerID, modelSlug string) *ModelCost {
 	}
 
 	for _, variant := range variations {
-		if model, ok := provider.Models[variant]; ok {
-			return &model.Cost
+		if cost, ok := modelsDB.globalModels[variant]; ok {
+			return &cost
 		}
 	}
 
@@ -211,4 +258,3 @@ func IsModelsDBLoaded() bool {
 	defer modelsDB.mu.RUnlock()
 	return modelsDB.loaded
 }
-
