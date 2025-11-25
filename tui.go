@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	zone "github.com/lrstanley/bubblezone"
 )
 
 // Messages for TUI updates
@@ -54,32 +55,40 @@ type model struct {
 	saveFilename    string
 	saveMessage     string
 	saveMessageTime time.Time
+
+	// Message navigation in detail view
+	collapsedMessages map[int]bool // Track collapsed state per message index
+	messagePositions  []int        // Line positions of each message in viewport
+	currentMsgIndex   int          // Currently focused message index
 }
 
 func initialModel(listenAddr, targetURL string, saveTapeFile string) model {
 	return model{
-		requests:     make([]*LLMRequest, 0),
-		listenAddr:   listenAddr,
-		targetURL:    targetURL,
-		followLatest: false,
-		tapeSpeed:    1,
-		saveTapeFile: saveTapeFile,
+		requests:          make([]*LLMRequest, 0),
+		listenAddr:        listenAddr,
+		targetURL:         targetURL,
+		followLatest:      false,
+		tapeSpeed:         1,
+		saveTapeFile:      saveTapeFile,
+		collapsedMessages: make(map[int]bool),
 	}
 }
 
 func initialTapeModel(tape *Tape) model {
 	return model{
-		requests:     tape.Requests,
-		tape:         tape,
-		tapeMode:     true,
-		followLatest: false,
-		tapeSpeed:    1,
-		listenAddr:   tape.Session.ListenAddr,
-		targetURL:    tape.Session.TargetURL,
+		requests:          tape.Requests,
+		tape:              tape,
+		tapeMode:          true,
+		followLatest:      false,
+		tapeSpeed:         1,
+		listenAddr:        tape.Session.ListenAddr,
+		targetURL:         tape.Session.TargetURL,
+		collapsedMessages: make(map[int]bool),
 	}
 }
 
 func (m model) Init() tea.Cmd {
+	zone.NewGlobal()
 	return tea.Batch(tickCmd(), tea.EnterAltScreen, tea.EnableMouseCellMotion)
 }
 
@@ -343,15 +352,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "g", "home":
-			// Jump to oldest (top)
-			if !m.showDetail {
+			if m.showDetail {
+				// Scroll to top of viewport and first message
+				m.viewport.GotoTop()
+				m.currentMsgIndex = 0
+			} else {
+				// Jump to oldest (top) in list view
 				m.cursor = 0
 				m.followLatest = false
 			}
 
 		case "G", "end":
-			// Jump to newest (bottom)
-			if !m.showDetail && len(m.requests) > 0 {
+			if m.showDetail {
+				// Scroll to bottom of viewport and last message
+				m.viewport.GotoBottom()
+				if len(m.messagePositions) > 0 {
+					m.currentMsgIndex = len(m.messagePositions) - 1
+				}
+			} else if len(m.requests) > 0 {
+				// Jump to newest (bottom) in list view
 				m.cursor = len(m.requests) - 1
 				m.followLatest = false
 			}
@@ -372,6 +391,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selected = m.requests[m.cursor]
 				m.selectedID = m.selected.ID
 				m.activeTab = TabMessages
+				// Reset message navigation state for new request
+				m.currentMsgIndex = 0
+				m.messagePositions = nil
+				m.collapsedMessages = make(map[int]bool)
 				m.viewport.SetContent(m.renderTabContent())
 				m.viewport.GotoTop()
 			}
@@ -424,36 +447,104 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.viewport.SetContent(m.renderTabContent())
 				m.viewport.GotoTop()
 			}
+
+		case "c":
+			// Toggle collapse current message in Messages tab
+			if m.showDetail && m.activeTab == TabMessages {
+				if m.collapsedMessages == nil {
+					m.collapsedMessages = make(map[int]bool)
+				}
+				m.collapsedMessages[m.currentMsgIndex] = !m.collapsedMessages[m.currentMsgIndex]
+				m.viewport.SetContent(m.renderTabContent())
+			}
+
+		case "C":
+			// Collapse/expand all messages in Messages tab
+			if m.showDetail && m.activeTab == TabMessages {
+				if m.collapsedMessages == nil {
+					m.collapsedMessages = make(map[int]bool)
+				}
+				// Check if any are expanded - if so, collapse all; otherwise expand all
+				anyExpanded := false
+				for i := 0; i < len(m.messagePositions); i++ {
+					if !m.collapsedMessages[i] {
+						anyExpanded = true
+						break
+					}
+				}
+				for i := 0; i < len(m.messagePositions); i++ {
+					m.collapsedMessages[i] = anyExpanded
+				}
+				m.viewport.SetContent(m.renderTabContent())
+			}
+
+		case "n":
+			// Jump to next message in Messages/Output tab
+			if m.showDetail && (m.activeTab == TabMessages || m.activeTab == TabOutput) {
+				if m.currentMsgIndex < len(m.messagePositions)-1 {
+					m.currentMsgIndex++
+					if m.currentMsgIndex < len(m.messagePositions) {
+						m.viewport.SetYOffset(m.messagePositions[m.currentMsgIndex])
+					}
+				}
+			}
+
+		case "N":
+			// Jump to previous message in Messages/Output tab
+			if m.showDetail && (m.activeTab == TabMessages || m.activeTab == TabOutput) {
+				if m.currentMsgIndex > 0 {
+					m.currentMsgIndex--
+					if m.currentMsgIndex < len(m.messagePositions) {
+						m.viewport.SetYOffset(m.messagePositions[m.currentMsgIndex])
+					}
+				}
+			}
 		}
 
 	case tea.MouseMsg:
-		// Handle mouse clicks in list view
-		if !m.showDetail && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-			// Calculate which row was clicked
-			// Header takes 4 lines (title + blank + column headers + separator)
-			headerLines := 4
-			clickedRow := msg.Y - headerLines
-			listHeight := m.height - 8
-
-			if clickedRow >= 0 && clickedRow < listHeight {
-				// Calculate the actual index based on scroll position
-				start := 0
-				if len(m.requests) > listHeight && m.cursor >= listHeight {
-					start = m.cursor - listHeight + 1
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			if m.showDetail && m.activeTab == TabMessages {
+				// Handle clicks in Messages tab for collapsing messages using bubblezone
+				// Only the header (role line) is clickable, so this works even when partially scrolled
+				for i := 0; i < len(m.messagePositions); i++ {
+					msgZoneID := fmt.Sprintf("msg-%d", i)
+					if zone.Get(msgZoneID).InBounds(msg) {
+						if m.collapsedMessages == nil {
+							m.collapsedMessages = make(map[int]bool)
+						}
+						m.collapsedMessages[i] = !m.collapsedMessages[i]
+						m.currentMsgIndex = i
+						m.viewport.SetContent(m.renderTabContent())
+						break
+					}
 				}
+			} else if !m.showDetail {
+				// Handle mouse clicks in list view
+				// Header takes 4 lines (title + blank + column headers + separator)
+				headerLines := 4
+				clickedRow := msg.Y - headerLines
+				listHeight := m.height - 8
 
-				actualIndex := start + clickedRow
-				if actualIndex >= 0 && actualIndex < len(m.requests) {
-					m.cursor = actualIndex
-					m.followLatest = false
+				if clickedRow >= 0 && clickedRow < listHeight {
+					// Calculate the actual index based on scroll position
+					start := 0
+					if len(m.requests) > listHeight && m.cursor >= listHeight {
+						start = m.cursor - listHeight + 1
+					}
 
-					// Single click shows detail for better UX
-					m.showDetail = true
-					m.selected = m.requests[m.cursor]
-					m.selectedID = m.selected.ID
-					m.activeTab = TabMessages
-					m.viewport.SetContent(m.renderTabContent())
-					m.viewport.GotoTop()
+					actualIndex := start + clickedRow
+					if actualIndex >= 0 && actualIndex < len(m.requests) {
+						m.cursor = actualIndex
+						m.followLatest = false
+
+						// Single click shows detail for better UX
+						m.showDetail = true
+						m.selected = m.requests[m.cursor]
+						m.selectedID = m.selected.ID
+						m.activeTab = TabMessages
+						m.viewport.SetContent(m.renderTabContent())
+						m.viewport.GotoTop()
+					}
 				}
 			}
 		}
@@ -462,10 +553,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-		headerHeight := 4
-		footerHeight := 2
-		tabHeight := 3
-		viewportHeight := m.height - headerHeight - footerHeight - tabHeight - 4
+		// Detail view layout:
+		// - Header line + 1 blank line = 2
+		// - Tabs with border (3 lines) + 1 blank line = 4
+		// - Viewport border (top + bottom) = 2
+		// - Footer line = 1
+		// Total overhead = 9 lines
+		viewportHeight := m.height - 9
 
 		// Pre-warm markdown renderer for message content width
 		// contentWidth = m.width - 10, textWidth = contentWidth - 6 = m.width - 16
@@ -613,7 +707,7 @@ func (m model) View() string {
 	}
 
 	if m.showDetail {
-		return m.renderDetailView()
+		return zone.Scan(m.renderDetailView())
 	}
 
 	return m.renderListView()

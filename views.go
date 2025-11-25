@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	zone "github.com/lrstanley/bubblezone"
 )
 
 func (m model) renderSaveDialog() string {
@@ -407,16 +408,30 @@ func (m model) renderDetailView() string {
 	b.WriteString(m.viewport.View())
 	b.WriteString("\n")
 
-	// Footer
-	help := helpStyle.Render("1-4/tab switch tabs • ↑/↓ scroll • esc/q back")
-	scroll := statusBarStyle.Render(fmt.Sprintf("%d%%", int(m.viewport.ScrollPercent()*100)))
-	footer := lipgloss.JoinHorizontal(lipgloss.Bottom, help, strings.Repeat(" ", max(0, m.width-lipgloss.Width(help)-lipgloss.Width(scroll)-2)), scroll)
+	// Footer - show context-sensitive help
+	var help string
+	if m.activeTab == TabMessages || m.activeTab == TabOutput {
+		help = helpStyle.Render("1-4/tab • n/N msg • c/C collapse • g/G top/end • ↑/↓ scroll • esc back")
+	} else {
+		help = helpStyle.Render("1-4/tab tabs • g/G top/end • ↑/↓ scroll • esc/q back")
+	}
+
+	// Build right side status
+	var rightStatus string
+	if (m.activeTab == TabMessages || m.activeTab == TabOutput) && len(m.messagePositions) > 0 {
+		msgIndicator := lipgloss.NewStyle().Foreground(accentColor).Render(
+			fmt.Sprintf("[%d/%d]", m.currentMsgIndex+1, len(m.messagePositions)))
+		rightStatus = msgIndicator + " " + statusBarStyle.Render(fmt.Sprintf("%d%%", int(m.viewport.ScrollPercent()*100)))
+	} else {
+		rightStatus = statusBarStyle.Render(fmt.Sprintf("%d%%", int(m.viewport.ScrollPercent()*100)))
+	}
+	footer := lipgloss.JoinHorizontal(lipgloss.Bottom, help, strings.Repeat(" ", max(0, m.width-lipgloss.Width(help)-lipgloss.Width(rightStatus)-2)), rightStatus)
 	b.WriteString(footer)
 
 	return b.String()
 }
 
-func (m model) renderTabContent() string {
+func (m *model) renderTabContent() string {
 	if m.selected == nil {
 		return ""
 	}
@@ -434,7 +449,7 @@ func (m model) renderTabContent() string {
 	return ""
 }
 
-func (m model) renderMessagesTab() string {
+func (m *model) renderMessagesTab() string {
 	if len(m.selected.RequestBody) == 0 {
 		return contentStyle.Render("No request body")
 	}
@@ -445,6 +460,7 @@ func (m model) renderMessagesTab() string {
 	}
 
 	var b strings.Builder
+	lineCount := 0
 
 	// Content width for boxes (viewport width minus border/padding)
 	contentWidth := m.width - 10
@@ -464,14 +480,23 @@ func (m model) renderMessagesTab() string {
 		labelStyle.Render("Max Tokens:"), req.MaxTokens,
 		labelStyle.Render("Stream:"), req.Stream,
 	)
-	b.WriteString(metaBox.Render(meta))
+	metaRendered := metaBox.Render(meta)
+	b.WriteString(metaRendered)
 	b.WriteString("\n\n")
+	lineCount += strings.Count(metaRendered, "\n") + 2
 
 	b.WriteString(labelStyle.Render("═══ Messages ═══"))
 	b.WriteString("\n\n")
+	lineCount += 2
+
+	// Reset message positions
+	m.messagePositions = make([]int, len(req.Messages))
 
 	// Messages
 	for i, msg := range req.Messages {
+		// Track line position of this message
+		m.messagePositions[i] = lineCount
+
 		roleColor := dimColor
 		roleIcon := "💬"
 		switch msg.Role {
@@ -489,10 +514,33 @@ func (m model) renderMessagesTab() string {
 			roleIcon = "🔧"
 		}
 
+		// Collapse indicator
+		collapseIcon := "▼"
+		if m.collapsedMessages[i] {
+			collapseIcon = "▶"
+		}
+
+		// Highlight current message
+		isCurrentMsg := i == m.currentMsgIndex
+		collapseIndicator := lipgloss.NewStyle().
+			Foreground(dimColor).
+			Render(collapseIcon)
+		if isCurrentMsg {
+			collapseIndicator = lipgloss.NewStyle().
+				Foreground(accentColor).
+				Bold(true).
+				Render(collapseIcon)
+		}
+
 		roleStyled := lipgloss.NewStyle().
 			Foreground(roleColor).
 			Bold(true).
 			Render(fmt.Sprintf("%s %s", roleIcon, strings.ToUpper(msg.Role)))
+
+		// Wrap only the header (collapse indicator + role) with zone.Mark for click detection
+		// This ensures clicks work even when the message is partially scrolled
+		msgZoneID := fmt.Sprintf("msg-%d", i)
+		clickableHeader := zone.Mark(msgZoneID, collapseIndicator+" "+roleStyled)
 
 		// Handle content which can be string or array
 		content := ""
@@ -524,48 +572,82 @@ func (m model) renderMessagesTab() string {
 		// Sanitize content for terminal
 		content = sanitizeForTerminal(content)
 
-		msgBox := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(roleColor).
-			Padding(1, 2).
-			Width(contentWidth)
+		// Border color based on role only
+		borderColor := roleColor
 
 		// Text width inside the box (minus border and padding)
 		textWidth := contentWidth - 6
-		msgContent := fmt.Sprintf("%s\n\n%s", roleStyled, renderMarkdown(content, textWidth))
 
-		if msg.Name != "" {
-			msgContent = fmt.Sprintf("%s (%s)\n\n%s", roleStyled, msg.Name, renderMarkdown(content, textWidth))
-		}
+		var msgContent string
+		var msgBox lipgloss.Style
 
-		// Handle tool call ID for tool response messages
-		if msg.ToolCallID != "" {
-			toolCallLabel := lipgloss.NewStyle().
-				Foreground(warningColor).
-				Italic(true).
-				Render(fmt.Sprintf("Response to: %s", msg.ToolCallID))
-			msgContent = fmt.Sprintf("%s\n%s\n\n%s", roleStyled, toolCallLabel, renderMarkdown(content, textWidth))
-		}
-
-		// Handle tool calls in message
-		if len(msg.ToolCalls) > 0 {
-			msgContent = roleStyled + "\n\n"
-			if content != "" && content != "null" {
-				msgContent += renderMarkdown(content, textWidth) + "\n\n"
+		if m.collapsedMessages[i] {
+			// Collapsed view - just show header with content preview
+			preview := content
+			if len(preview) > 60 {
+				preview = preview[:57] + "..."
 			}
-			msgContent += m.renderToolCalls(msg.ToolCalls, textWidth)
+			// Replace newlines with spaces in preview
+			preview = strings.ReplaceAll(preview, "\n", " ")
+			previewStyled := lipgloss.NewStyle().
+				Foreground(dimColor).
+				Italic(true).
+				Render(preview)
+
+			msgContent = fmt.Sprintf("%s  %s", clickableHeader, previewStyled)
+
+			msgBox = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(borderColor).
+				Padding(0, 2).
+				Width(contentWidth)
+		} else {
+			// Expanded view - full content
+			msgBox = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(borderColor).
+				Padding(0, 2).
+				Width(contentWidth)
+
+			msgContent = fmt.Sprintf("%s\n\n%s", clickableHeader, renderMarkdown(content, textWidth))
+
+			if msg.Name != "" {
+				msgContent = fmt.Sprintf("%s (%s)\n\n%s", clickableHeader, msg.Name, renderMarkdown(content, textWidth))
+			}
+
+			// Handle tool call ID for tool response messages
+			if msg.ToolCallID != "" {
+				toolCallLabel := lipgloss.NewStyle().
+					Foreground(warningColor).
+					Italic(true).
+					Render(fmt.Sprintf("Response to: %s", msg.ToolCallID))
+				msgContent = fmt.Sprintf("%s\n%s\n\n%s", clickableHeader, toolCallLabel, renderMarkdown(content, textWidth))
+			}
+
+			// Handle tool calls in message
+			if len(msg.ToolCalls) > 0 {
+				msgContent = clickableHeader + "\n\n"
+				if content != "" && content != "null" {
+					msgContent += renderMarkdown(content, textWidth) + "\n\n"
+				}
+				msgContent += m.renderToolCalls(msg.ToolCalls, textWidth)
+			}
 		}
 
-		b.WriteString(msgBox.Render(msgContent))
+		rendered := msgBox.Render(msgContent)
+		b.WriteString(rendered)
+		lineCount += strings.Count(rendered, "\n") + 1
+
 		if i < len(req.Messages)-1 {
 			b.WriteString("\n")
+			lineCount++
 		}
 	}
 
 	return b.String()
 }
 
-func (m model) renderOutputTab() string {
+func (m *model) renderOutputTab() string {
 	if len(m.selected.ResponseBody) == 0 {
 		if m.selected.Status == StatusPending {
 			return pendingStyle.Render("⏳ Waiting for response...")
@@ -580,6 +662,7 @@ func (m model) renderOutputTab() string {
 	}
 
 	var b strings.Builder
+	lineCount := 0
 
 	// Content width for boxes (viewport width minus border/padding)
 	contentWidth := m.width - 10
@@ -600,14 +683,23 @@ func (m model) renderOutputTab() string {
 		labelStyle.Render("Completion Tokens:"), resp.Usage.CompletionTokens,
 		labelStyle.Render("Total Tokens:"), resp.Usage.TotalTokens,
 	)
-	b.WriteString(metaBox.Render(meta))
+	metaRendered := metaBox.Render(meta)
+	b.WriteString(metaRendered)
 	b.WriteString("\n\n")
+	lineCount += strings.Count(metaRendered, "\n") + 2
 
 	b.WriteString(labelStyle.Render("═══ Choices ═══"))
 	b.WriteString("\n\n")
+	lineCount += 2
+
+	// Reset message positions for output tab choices
+	m.messagePositions = make([]int, len(resp.Choices))
 
 	// Choices
 	for i, choice := range resp.Choices {
+		// Track line position of this choice
+		m.messagePositions[i] = lineCount
+
 		roleStyled := lipgloss.NewStyle().
 			Foreground(successColor).
 			Bold(true).
@@ -625,10 +717,10 @@ func (m model) renderOutputTab() string {
 		// Sanitize content for terminal
 		content = sanitizeForTerminal(content)
 
-		// Determine border color based on finish reason
-		borderColor := successColor
+		// Determine border color based on finish reason only
+		borderCol := successColor
 		if choice.FinishReason == "tool_calls" {
-			borderColor = warningColor
+			borderCol = warningColor
 		}
 
 		finishInfo := lipgloss.NewStyle().
@@ -638,7 +730,7 @@ func (m model) renderOutputTab() string {
 
 		msgBox := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(borderColor).
+			BorderForeground(borderCol).
 			Padding(1, 2).
 			Width(contentWidth)
 
@@ -658,10 +750,13 @@ func (m model) renderOutputTab() string {
 			msgContent = fmt.Sprintf("%s\n\n%s\n\n%s", roleStyled, renderMarkdown(content, textWidth), finishInfo)
 		}
 
-		b.WriteString(msgBox.Render(msgContent))
+		rendered := msgBox.Render(msgContent)
+		b.WriteString(rendered)
+		lineCount += strings.Count(rendered, "\n") + 1
 
 		if i < len(resp.Choices)-1 {
 			b.WriteString("\n")
+			lineCount++
 		}
 	}
 
