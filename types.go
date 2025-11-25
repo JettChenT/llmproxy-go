@@ -39,6 +39,9 @@ type LLMRequest struct {
 	OutputTokens         int     // Actual from response usage.completion_tokens
 	ProviderID           string  // Detected provider (e.g., "openai", "anthropic")
 	Cost                 float64 // Calculated cost in USD
+
+	// Cache tracking
+	CachedResponse bool // True if this response came from cache
 }
 
 // OpenAI tool call types

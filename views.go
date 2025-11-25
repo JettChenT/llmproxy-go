@@ -346,8 +346,13 @@ func (m model) renderRequestRow(req *LLMRequest, selected bool) string {
 		statusText = "●  PENDING"
 		statusStyle = pendingStyle
 	case StatusComplete:
-		statusText = "✓  DONE"
-		statusStyle = completeStyle
+		if req.CachedResponse {
+			statusText = "⚡ CACHED"
+			statusStyle = lipgloss.NewStyle().Foreground(accentColor)
+		} else {
+			statusText = "✓  DONE"
+			statusStyle = completeStyle
+		}
 	case StatusError:
 		statusText = "✗  ERROR"
 		statusStyle = errorStyle
@@ -452,6 +457,12 @@ func (m model) renderDetailView() string {
 	header := titleStyle.Render(fmt.Sprintf("Request #%d", m.selected.ID))
 	modelInfo := modelBadgeStyle.Render(m.selected.Model)
 
+	// Cache indicator
+	var cacheInfo string
+	if m.selected.CachedResponse {
+		cacheInfo = lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render("CACHED")
+	}
+
 	// Build cost/token info string
 	var costInfo string
 	if m.selected.Cost > 0 {
@@ -460,11 +471,15 @@ func (m model) renderDetailView() string {
 		costInfo = lipgloss.NewStyle().Foreground(dimColor).Render("(no pricing)")
 	}
 
-	if costInfo != "" {
-		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Center, header, "  ", modelInfo, "  ", costInfo))
-	} else {
-		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Center, header, "  ", modelInfo))
+	// Build header line with all components
+	headerParts := []string{header, "  ", modelInfo}
+	if cacheInfo != "" {
+		headerParts = append(headerParts, "  ", cacheInfo)
 	}
+	if costInfo != "" {
+		headerParts = append(headerParts, "  ", costInfo)
+	}
+	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Center, headerParts...))
 	b.WriteString("\n\n")
 
 	// Tabs

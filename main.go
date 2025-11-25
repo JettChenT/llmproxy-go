@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -14,6 +16,13 @@ func main() {
 	targetURL := flag.String("target", "http://localhost:3000", "Target URL to proxy to")
 	tapeFile := flag.String("tape", "", "Open a tape file for inspection (replay mode)")
 	saveTape := flag.String("save-tape", "", "Auto-save session to tape file")
+
+	// Cache configuration flags
+	cacheMode := flag.String("cache", "none", "Cache mode: none, memory, global")
+	cacheTTL := flag.Duration("cache-ttl", 24*time.Hour, "Cache TTL duration (e.g., 1h, 24h, 7d)")
+	cacheSimulateLatency := flag.Bool("cache-simulate-latency", false, "Simulate original response latency for cached responses")
+	cacheDir := flag.String("cache-dir", "", "Directory for badger cache (default: ~/.llmproxy-cache)")
+
 	flag.Parse()
 
 	// Check if we're in tape playback mode
@@ -38,6 +47,26 @@ func main() {
 	}
 
 	// Normal proxy mode
+	// Initialize cache
+	badgerPath := *cacheDir
+	if badgerPath == "" {
+		home, _ := os.UserHomeDir()
+		badgerPath = filepath.Join(home, ".llmproxy-cache")
+	}
+
+	cacheConfig := CacheConfig{
+		Mode:            CacheMode(*cacheMode),
+		TTL:             *cacheTTL,
+		SimulateLatency: *cacheSimulateLatency,
+		BadgerPath:      badgerPath,
+	}
+
+	if err := InitCache(cacheConfig); err != nil {
+		fmt.Fprintf(os.Stderr, "Error initializing cache: %v\n", err)
+		os.Exit(1)
+	}
+	defer CloseCache()
+
 	// Initialize tape writer if save-tape is specified
 	if *saveTape != "" {
 		writer, err := NewTapeWriter(*saveTape)

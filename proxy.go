@@ -164,6 +164,16 @@ func startProxy(listenAddr, targetURL string) {
 		// Estimate input tokens from request body size
 		estimatedTokens := EstimateInputTokens(string(requestBody))
 
+		// Generate cache key and check cache (only for non-streaming requests)
+		cache := GetCache()
+		cacheKey := GenerateCacheKey(r.URL.Path, requestBody)
+		var cachedEntry *CacheEntry
+		var cacheHit bool
+
+		if !isStreaming {
+			cachedEntry, cacheHit = cache.Get(cacheKey)
+		}
+
 		// Create request entry
 		requestsMu.Lock()
 		requestID++
@@ -182,6 +192,7 @@ func startProxy(listenAddr, targetURL string) {
 			IsStreaming:          isStreaming,
 			ProviderID:           providerID,
 			EstimatedInputTokens: estimatedTokens,
+			CachedResponse:       cacheHit,
 		}
 		requests = append(requests, req)
 		requestsMu.Unlock()
@@ -194,6 +205,51 @@ func startProxy(listenAddr, targetURL string) {
 		// Write to tape if recording
 		if tapeWriter != nil {
 			tapeWriter.WriteRequestStart(req)
+		}
+
+		// Handle cache hit
+		if cacheHit && cachedEntry != nil {
+			// Simulate latency if configured
+			config := GetCacheConfig()
+			if config.SimulateLatency && cachedEntry.Duration > 0 {
+				time.Sleep(cachedEntry.Duration)
+			}
+
+			// Write cached response
+			for k, v := range cachedEntry.ResponseHeaders {
+				for _, val := range v {
+					w.Header().Add(k, val)
+				}
+			}
+			w.WriteHeader(cachedEntry.StatusCode)
+			w.Write(cachedEntry.ResponseBody)
+
+			// Update request with cached response
+			req.Duration = time.Since(startTime)
+			req.StatusCode = cachedEntry.StatusCode
+			req.ResponseHeaders = cachedEntry.ResponseHeaders
+			req.ResponseBody = cachedEntry.ResponseBody
+			req.ResponseSize = len(cachedEntry.ResponseBody)
+
+			if cachedEntry.StatusCode >= 200 && cachedEntry.StatusCode < 300 {
+				req.Status = StatusComplete
+			} else {
+				req.Status = StatusError
+			}
+
+			// Extract token usage from cached response
+			go extractTokenUsage(req, cachedEntry.ResponseBody)
+
+			// Write to tape if recording
+			if tapeWriter != nil {
+				tapeWriter.WriteRequestComplete(req)
+			}
+
+			// Notify TUI
+			if program != nil {
+				program.Send(requestUpdatedMsg{req: req})
+			}
+			return
 		}
 
 		// Proxy the request
@@ -222,6 +278,18 @@ func startProxy(listenAddr, targetURL string) {
 
 		if recorder.statusCode >= 200 && recorder.statusCode < 300 {
 			req.Status = StatusComplete
+
+			// Store successful response in cache (non-streaming only)
+			if !isStreaming {
+				cacheEntry := &CacheEntry{
+					ResponseBody:    decompressedBody,
+					ResponseHeaders: respHeaders,
+					StatusCode:      recorder.statusCode,
+					Duration:        req.Duration,
+					CreatedAt:       time.Now(),
+				}
+				cache.Set(cacheKey, cacheEntry)
+			}
 		} else {
 			req.Status = StatusError
 		}
