@@ -6,6 +6,10 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/alecthomas/chroma/v2"
+	"github.com/alecthomas/chroma/v2/formatters"
+	"github.com/alecthomas/chroma/v2/lexers"
+	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -194,101 +198,39 @@ func sanitizeForTerminal(s string) string {
 	return result.String()
 }
 
-// highlightJSON applies syntax highlighting to JSON string
+// highlightJSON applies syntax highlighting to JSON string using chroma
 func highlightJSON(s string) string {
 	// First sanitize the input
 	s = sanitizeForTerminal(s)
 
-	var result strings.Builder
-	inString := false
-	isKey := false
-	escaped := false
+	lexer := lexers.Get("json")
+	if lexer == nil {
+		lexer = lexers.Fallback
+	}
+	lexer = chroma.Coalesce(lexer)
 
-	keyStyle := lipgloss.NewStyle().Foreground(primaryColor)
-	stringStyle := lipgloss.NewStyle().Foreground(successColor)
-	numberStyle := lipgloss.NewStyle().Foreground(warningColor)
-	boolStyle := lipgloss.NewStyle().Foreground(accentColor)
-	punctStyle := lipgloss.NewStyle().Foreground(dimColor)
-
-	i := 0
-	for i < len(s) {
-		c := s[i]
-
-		// Handle escape sequences
-		if escaped {
-			if isKey {
-				result.WriteString(keyStyle.Render(string(c)))
-			} else {
-				result.WriteString(stringStyle.Render(string(c)))
-			}
-			escaped = false
-			i++
-			continue
-		}
-
-		if c == '\\' && inString {
-			escaped = true
-			if isKey {
-				result.WriteString(keyStyle.Render(string(c)))
-			} else {
-				result.WriteString(stringStyle.Render(string(c)))
-			}
-			i++
-			continue
-		}
-
-		if c == '"' {
-			if !inString {
-				inString = true
-				// Check if this is a key (followed by :)
-				isKey = false
-				for j := i + 1; j < len(s); j++ {
-					if s[j] == '\\' {
-						j++ // Skip escaped character
-						continue
-					}
-					if s[j] == '"' {
-						for k := j + 1; k < len(s); k++ {
-							if s[k] == ':' {
-								isKey = true
-								break
-							} else if s[k] != ' ' && s[k] != '\n' && s[k] != '\t' {
-								break
-							}
-						}
-						break
-					}
-				}
-			} else {
-				inString = false
-			}
-
-			if isKey {
-				result.WriteString(keyStyle.Render(string(c)))
-			} else {
-				result.WriteString(stringStyle.Render(string(c)))
-			}
-		} else if inString {
-			if isKey {
-				result.WriteString(keyStyle.Render(string(c)))
-			} else {
-				result.WriteString(stringStyle.Render(string(c)))
-			}
-		} else if c == '{' || c == '}' || c == '[' || c == ']' || c == ':' || c == ',' {
-			result.WriteString(punctStyle.Render(string(c)))
-		} else if (c >= '0' && c <= '9') || c == '-' || c == '.' {
-			result.WriteString(numberStyle.Render(string(c)))
-		} else if i+4 <= len(s) && (s[i:i+4] == "true" || s[i:i+4] == "null") {
-			result.WriteString(boolStyle.Render(s[i : i+4]))
-			i += 3
-		} else if i+5 <= len(s) && s[i:i+5] == "false" {
-			result.WriteString(boolStyle.Render(s[i : i+5]))
-			i += 4
-		} else {
-			result.WriteByte(c)
-		}
-		i++
+	// Use dracula style which complements the cyberpunk dark theme
+	style := styles.Get("dracula")
+	if style == nil {
+		style = styles.Fallback
 	}
 
-	return result.String()
+	// Use terminal256 formatter for terminal output
+	formatter := formatters.Get("terminal256")
+	if formatter == nil {
+		formatter = formatters.Fallback
+	}
+
+	iterator, err := lexer.Tokenise(nil, s)
+	if err != nil {
+		return s
+	}
+
+	var buf strings.Builder
+	err = formatter.Format(&buf, style, iterator)
+	if err != nil {
+		return s
+	}
+
+	return buf.String()
 }
