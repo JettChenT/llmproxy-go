@@ -95,6 +95,9 @@ func decompressIfNeeded(data []byte, contentEncoding string) []byte {
 }
 
 func startProxy(listenAddr, targetURL string) {
+	// Load models.dev database in background
+	LoadModelsDB()
+
 	target, err := url.Parse(targetURL)
 	if err != nil {
 		log.Fatalf("Invalid target URL: %v", err)
@@ -154,22 +157,30 @@ func startProxy(listenAddr, targetURL string) {
 			}
 		}
 
+		// Detect provider from target URL
+		providerID, _ := FindProviderByURL(fullURL)
+
+		// Estimate input tokens from request body size
+		estimatedTokens := EstimateInputTokens(string(requestBody))
+
 		// Create request entry
 		requestsMu.Lock()
 		requestID++
 		req := &LLMRequest{
-			ID:             requestID,
-			Method:         r.Method,
-			Path:           r.URL.Path,
-			Host:           target.Host,
-			URL:            fullURL,
-			Model:          model,
-			Status:         StatusPending,
-			StartTime:      startTime,
-			RequestHeaders: reqHeaders,
-			RequestBody:    requestBody,
-			RequestSize:    len(requestBody),
-			IsStreaming:    isStreaming,
+			ID:                   requestID,
+			Method:               r.Method,
+			Path:                 r.URL.Path,
+			Host:                 target.Host,
+			URL:                  fullURL,
+			Model:                model,
+			Status:               StatusPending,
+			StartTime:            startTime,
+			RequestHeaders:       reqHeaders,
+			RequestBody:          requestBody,
+			RequestSize:          len(requestBody),
+			IsStreaming:          isStreaming,
+			ProviderID:           providerID,
+			EstimatedInputTokens: estimatedTokens,
 		}
 		requests = append([]*LLMRequest{req}, requests...)
 		requestsMu.Unlock()
@@ -209,6 +220,9 @@ func startProxy(listenAddr, targetURL string) {
 			req.Status = StatusError
 		}
 
+		// Extract token usage from response (non-blocking)
+		go extractTokenUsage(req, decompressedBody)
+
 		// Notify TUI
 		if program != nil {
 			program.Send(requestUpdatedMsg{req: req})
@@ -220,4 +234,49 @@ func startProxy(listenAddr, targetURL string) {
 			log.Fatalf("Server error: %v", err)
 		}
 	}()
+}
+
+// extractTokenUsage extracts token usage from response and calculates cost
+// This runs in a goroutine to not block the main proxy flow
+func extractTokenUsage(req *LLMRequest, responseBody []byte) {
+	// Recover from any panics to ensure this never crashes the proxy
+	defer func() {
+		if r := recover(); r != nil {
+			// Silently ignore panics in cost calculation
+		}
+	}()
+
+	if len(responseBody) == 0 {
+		return
+	}
+
+	// Try to parse as OpenAI-style response with usage field
+	var resp struct {
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+
+	if err := json.Unmarshal(responseBody, &resp); err != nil {
+		return
+	}
+
+	// Update token counts
+	req.InputTokens = resp.Usage.PromptTokens
+	req.OutputTokens = resp.Usage.CompletionTokens
+
+	// Calculate cost if we have provider and model info
+	if req.ProviderID != "" && req.Model != "" {
+		cost := GetModelCost(req.ProviderID, req.Model)
+		if cost != nil {
+			req.Cost = CalculateCost(cost, req.InputTokens, req.OutputTokens)
+		}
+	}
+
+	// Notify TUI of the update (if tokens were extracted)
+	if program != nil && (req.InputTokens > 0 || req.OutputTokens > 0) {
+		program.Send(requestUpdatedMsg{req: req})
+	}
 }

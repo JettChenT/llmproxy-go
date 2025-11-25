@@ -32,6 +32,13 @@ type LLMRequest struct {
 	RequestSize     int
 	ResponseSize    int
 	IsStreaming     bool
+
+	// Token usage and cost tracking
+	EstimatedInputTokens int     // Estimated from request body length / 4
+	InputTokens          int     // Actual from response usage.prompt_tokens
+	OutputTokens         int     // Actual from response usage.completion_tokens
+	ProviderID           string  // Detected provider (e.g., "openai", "anthropic")
+	Cost                 float64 // Calculated cost in USD
 }
 
 // OpenAI tool call types

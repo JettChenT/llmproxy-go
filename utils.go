@@ -28,6 +28,34 @@ func formatBytes(b int) string {
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
+// formatTokenCount formats token counts into human readable format (e.g., 1.2K, 15K)
+func formatTokenCount(tokens int) string {
+	if tokens < 1000 {
+		return fmt.Sprintf("%d", tokens)
+	}
+	if tokens < 10000 {
+		return fmt.Sprintf("%.1fK", float64(tokens)/1000)
+	}
+	if tokens < 1000000 {
+		return fmt.Sprintf("%.0fK", float64(tokens)/1000)
+	}
+	return fmt.Sprintf("%.1fM", float64(tokens)/1000000)
+}
+
+// formatCost formats cost in USD with appropriate precision
+func formatCost(cost float64) string {
+	if cost < 0.0001 {
+		return "<$0.0001"
+	}
+	if cost < 0.01 {
+		return fmt.Sprintf("$%.4f", cost)
+	}
+	if cost < 1 {
+		return fmt.Sprintf("$%.3f", cost)
+	}
+	return fmt.Sprintf("$%.2f", cost)
+}
+
 // wrapText wraps text to fit within a given width
 func wrapText(s string, width int) string {
 	if width <= 0 {
@@ -196,4 +224,3 @@ func highlightJSON(s string) string {
 
 	return result.String()
 }
-

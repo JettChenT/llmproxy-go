@@ -26,8 +26,8 @@ func (m model) renderListView() string {
 		Foreground(dimColor).
 		Bold(true).
 		Padding(0, 1).
-		Render(fmt.Sprintf("%-6s %-12s %-26s %-6s %-10s %-12s",
-			"#", "STATUS", "MODEL", "CODE", "SIZE", "DURATION"))
+		Render(fmt.Sprintf("%-6s %-12s %-26s %-6s %-10s %-12s %-10s %-10s %-10s",
+			"#", "STATUS", "MODEL", "CODE", "SIZE", "DURATION", "IN TOK", "OUT TOK", "COST"))
 	b.WriteString(headerRow)
 	b.WriteString("\n")
 	b.WriteString(lipgloss.NewStyle().Foreground(borderColor).Render(strings.Repeat("─", m.width-2)))
@@ -54,7 +54,7 @@ func (m model) renderListView() string {
 
 	// Footer
 	b.WriteString("\n")
-	
+
 	// Show command mode or number buffer
 	if m.commandMode {
 		cmdPrompt := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(fmt.Sprintf(":%s", m.commandBuffer))
@@ -62,7 +62,7 @@ func (m model) renderListView() string {
 		b.WriteString(cmdPrompt + cmdHelp)
 		return b.String()
 	}
-	
+
 	// Build help text with follow mode indicator and number buffer
 	followIndicator := ""
 	if m.followLatest {
@@ -73,7 +73,21 @@ func (m model) renderListView() string {
 		numIndicator = lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(fmt.Sprintf(" [%s]", m.numBuffer))
 	}
 	help := helpStyle.Render("↑/↓/j/k navigate • :N goto • g/G top/bottom • f follow • enter select • q quit") + followIndicator + numIndicator
-	count := statusBarStyle.Render(fmt.Sprintf("%d requests", len(m.requests)))
+
+	// Calculate total cost across all requests
+	totalCost := 0.0
+	for _, req := range m.requests {
+		totalCost += req.Cost
+	}
+
+	// Build status with request count and total cost
+	var statusText string
+	if totalCost > 0 {
+		statusText = fmt.Sprintf("%d requests • $%.4f", len(m.requests), totalCost)
+	} else {
+		statusText = fmt.Sprintf("%d requests", len(m.requests))
+	}
+	count := statusBarStyle.Render(statusText)
 	footer := lipgloss.JoinHorizontal(lipgloss.Bottom, help, strings.Repeat(" ", max(0, m.width-lipgloss.Width(help)-lipgloss.Width(count)-2)), count)
 	b.WriteString(footer)
 
@@ -89,6 +103,9 @@ func (m model) renderRequestRow(req *LLMRequest, selected bool) string {
 		colCode     = 6
 		colSize     = 10
 		colDuration = 12
+		colInTok    = 10
+		colOutTok   = 10
+		colCost     = 10
 	)
 
 	// ID column
@@ -149,14 +166,46 @@ func (m model) renderRequestRow(req *LLMRequest, selected bool) string {
 	}
 	durationStr := fmt.Sprintf("%-*s", colDuration, durationText)
 
+	// Input tokens column - show actual if available, otherwise estimated with ~
+	var inTokText string
+	if req.InputTokens > 0 {
+		inTokText = formatTokenCount(req.InputTokens)
+	} else if req.EstimatedInputTokens > 0 {
+		inTokText = "~" + formatTokenCount(req.EstimatedInputTokens)
+	} else {
+		inTokText = "-"
+	}
+	inTokStr := fmt.Sprintf("%-*s", colInTok, inTokText)
+
+	// Output tokens column
+	var outTokText string
+	if req.OutputTokens > 0 {
+		outTokText = formatTokenCount(req.OutputTokens)
+	} else {
+		outTokText = "-"
+	}
+	outTokStr := fmt.Sprintf("%-*s", colOutTok, outTokText)
+
+	// Cost column
+	var costText string
+	if req.Cost > 0 {
+		costText = formatCost(req.Cost)
+	} else {
+		costText = "-"
+	}
+	costStr := fmt.Sprintf("%-*s", colCost, costText)
+
 	// Build row with simple spacing
-	row := fmt.Sprintf("%s %s %s %s %s %s",
+	row := fmt.Sprintf("%s %s %s %s %s %s %s %s %s",
 		idStr,
 		statusStr,
 		modelStr,
 		codeStr,
 		sizeStr,
 		durationStr,
+		inTokStr,
+		outTokStr,
+		costStr,
 	)
 
 	if selected {
@@ -175,7 +224,20 @@ func (m model) renderDetailView() string {
 	// Header with request info
 	header := titleStyle.Render(fmt.Sprintf("Request #%d", m.selected.ID))
 	modelInfo := modelBadgeStyle.Render(m.selected.Model)
-	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Center, header, "  ", modelInfo))
+
+	// Build cost/token info string
+	var costInfo string
+	if m.selected.Cost > 0 {
+		costInfo = lipgloss.NewStyle().Foreground(successColor).Render(formatCost(m.selected.Cost))
+	} else if m.selected.InputTokens > 0 || m.selected.OutputTokens > 0 {
+		costInfo = lipgloss.NewStyle().Foreground(dimColor).Render("(no pricing)")
+	}
+
+	if costInfo != "" {
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Center, header, "  ", modelInfo, "  ", costInfo))
+	} else {
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Center, header, "  ", modelInfo))
+	}
 	b.WriteString("\n\n")
 
 	// Tabs
@@ -664,4 +726,3 @@ func truncateID(id string) string {
 	}
 	return id[:8] + "..." + id[len(id)-8:]
 }
-
