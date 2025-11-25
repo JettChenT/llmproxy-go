@@ -526,10 +526,10 @@ func (m model) renderMessagesTab() string {
 			Padding(1, 2).
 			Width(m.width - 8)
 
-		msgContent := fmt.Sprintf("%s\n\n%s", roleStyled, wrapText(content, m.width-14))
+		msgContent := fmt.Sprintf("%s\n\n%s", roleStyled, renderMarkdown(content, m.width-14))
 
 		if msg.Name != "" {
-			msgContent = fmt.Sprintf("%s (%s)\n\n%s", roleStyled, msg.Name, wrapText(content, m.width-14))
+			msgContent = fmt.Sprintf("%s (%s)\n\n%s", roleStyled, msg.Name, renderMarkdown(content, m.width-14))
 		}
 
 		// Handle tool call ID for tool response messages
@@ -538,14 +538,14 @@ func (m model) renderMessagesTab() string {
 				Foreground(warningColor).
 				Italic(true).
 				Render(fmt.Sprintf("Response to: %s", msg.ToolCallID))
-			msgContent = fmt.Sprintf("%s\n%s\n\n%s", roleStyled, toolCallLabel, wrapText(content, m.width-14))
+			msgContent = fmt.Sprintf("%s\n%s\n\n%s", roleStyled, toolCallLabel, renderMarkdown(content, m.width-14))
 		}
 
 		// Handle tool calls in message
 		if len(msg.ToolCalls) > 0 {
 			msgContent = roleStyled + "\n\n"
 			if content != "" && content != "null" {
-				msgContent += wrapText(content, m.width-14) + "\n\n"
+				msgContent += renderMarkdown(content, m.width-14) + "\n\n"
 			}
 			msgContent += m.renderToolCalls(msg.ToolCalls)
 		}
@@ -638,13 +638,13 @@ func (m model) renderOutputTab() string {
 			// Tool call response
 			msgContent = roleStyled + "\n\n"
 			if content != "" && content != "null" && content != "\"\"" {
-				msgContent += wrapText(content, m.width-14) + "\n\n"
+				msgContent += renderMarkdown(content, m.width-14) + "\n\n"
 			}
 			msgContent += m.renderToolCalls(choice.Message.ToolCalls)
 			msgContent += "\n\n" + finishInfo
 		} else {
 			// Regular text response
-			msgContent = fmt.Sprintf("%s\n\n%s\n\n%s", roleStyled, wrapText(content, m.width-14), finishInfo)
+			msgContent = fmt.Sprintf("%s\n\n%s\n\n%s", roleStyled, renderMarkdown(content, m.width-14), finishInfo)
 		}
 
 		b.WriteString(msgBox.Render(msgContent))

@@ -6,8 +6,76 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// Cached markdown renderers by width
+var markdownRenderers = make(map[int]*glamour.TermRenderer)
+
+// Cached base style to avoid expensive detection on every render
+var baseStyle glamour.TermRendererOption
+
+// InitMarkdownRenderer pre-warms the markdown renderer cache for the given width
+func InitMarkdownRenderer(width int) {
+	getMarkdownRenderer(width)
+}
+
+// getMarkdownRenderer returns a cached markdown renderer or creates one
+func getMarkdownRenderer(width int) *glamour.TermRenderer {
+	// Check cache first
+	if r, ok := markdownRenderers[width]; ok {
+		return r
+	}
+
+	// Initialize base style once
+	if baseStyle == nil {
+		if lipgloss.HasDarkBackground() {
+			baseStyle = glamour.WithStandardStyle("dark")
+		} else {
+			baseStyle = glamour.WithStandardStyle("light")
+		}
+	}
+
+	// Create a new renderer with the specified width
+	r, err := glamour.NewTermRenderer(
+		baseStyle,
+		glamour.WithWordWrap(width),
+		glamour.WithColorProfile(lipgloss.ColorProfile()),
+	)
+	if err != nil {
+		return nil
+	}
+
+	// Cache for reuse
+	markdownRenderers[width] = r
+	return r
+}
+
+// renderMarkdown renders markdown content for terminal display
+func renderMarkdown(content string, width int) string {
+	if content == "" {
+		return ""
+	}
+
+	// Sanitize content first
+	content = sanitizeForTerminal(content)
+
+	renderer := getMarkdownRenderer(width)
+	if renderer == nil {
+		// Fall back to plain text wrapping if renderer fails
+		return wrapText(content, width)
+	}
+
+	rendered, err := renderer.Render(content)
+	if err != nil {
+		// Fall back to plain text wrapping on error
+		return wrapText(content, width)
+	}
+
+	// Trim trailing whitespace/newlines that glamour might add
+	return strings.TrimSpace(rendered)
+}
 
 // parseNumber parses a string into an integer
 func parseNumber(s string) (int, error) {
