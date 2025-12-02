@@ -1,2 +1,5 @@
 llmproxy-go
 *.tape
+# Added by goreleaser init:
+dist/
+.env
