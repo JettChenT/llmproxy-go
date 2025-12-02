@@ -11,17 +11,48 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func main() {
-	listenAddr := flag.String("listen", ":8080", "Address to listen on")
-	targetURL := flag.String("target", "http://localhost:3000", "Target URL to proxy to")
-	tapeFile := flag.String("tape", "", "Open a tape file for inspection (replay mode)")
-	saveTape := flag.String("save-tape", "", "Auto-save session to tape file")
+// Define flags at package level so they're available for help
+var (
+	listenAddr           = flag.String("listen", ":8080", "Address to listen on")
+	targetURL            = flag.String("target", "http://localhost:3000", "Target URL to proxy to")
+	tapeFile             = flag.String("tape", "", "Open a tape file for inspection (replay mode)")
+	saveTape             = flag.String("save-tape", "", "Auto-save session to tape file")
+	cacheMode            = flag.String("cache", "none", "Cache mode: none, memory, global")
+	cacheTTL             = flag.Duration("cache-ttl", 24*time.Hour, "Cache TTL duration (e.g., 1h, 24h, 7d)")
+	cacheSimulateLatency = flag.Bool("cache-simulate-latency", false, "Simulate original response latency for cached responses")
+	cacheDir             = flag.String("cache-dir", "", "Directory for badger cache (default: ~/.llmproxy-cache)")
+)
 
-	// Cache configuration flags
-	cacheMode := flag.String("cache", "none", "Cache mode: none, memory, global")
-	cacheTTL := flag.Duration("cache-ttl", 24*time.Hour, "Cache TTL duration (e.g., 1h, 24h, 7d)")
-	cacheSimulateLatency := flag.Bool("cache-simulate-latency", false, "Simulate original response latency for cached responses")
-	cacheDir := flag.String("cache-dir", "", "Directory for badger cache (default: ~/.llmproxy-cache)")
+func printUsage() {
+	fmt.Fprintf(os.Stderr, `llmproxy-go - LLM API Proxy with TUI
+
+Usage:
+  llmproxy-go [flags]              Start the proxy server
+  llmproxy-go cost <tape-file>     Print cost breakdown for a tape file
+
+Flags:
+`)
+	flag.PrintDefaults()
+}
+
+func main() {
+	flag.Usage = printUsage
+
+	// Check for subcommands first
+	if len(os.Args) >= 2 {
+		switch os.Args[1] {
+		case "cost":
+			if len(os.Args) < 3 {
+				fmt.Fprintf(os.Stderr, "Usage: llmproxy-go cost <tape-file>\n")
+				os.Exit(1)
+			}
+			RunCostCommand(os.Args[2])
+			return
+		case "help", "-h", "--help":
+			printUsage()
+			return
+		}
+	}
 
 	flag.Parse()
 

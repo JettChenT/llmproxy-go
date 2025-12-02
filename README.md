@@ -75,7 +75,8 @@ export OPENAI_API_BASE=http://localhost:8080
 ### Basic Command
 
 ```bash
-llmproxy-go [flags]
+llmproxy-go [flags]              # Start the proxy server
+llmproxy-go cost <tape-file>     # Print cost breakdown for a tape file
 ```
 
 ### Command-Line Flags
@@ -113,6 +114,11 @@ llmproxy-go --listen :8080 --target https://api.openai.com \
 **Replay a recorded session:**
 ```bash
 llmproxy-go --tape debug-session.tape
+```
+
+**Analyze costs from a recorded session:**
+```bash
+llmproxy-go cost debug-session.tape
 ```
 
 **Proxy Anthropic API:**
@@ -305,6 +311,20 @@ llmproxy-go automatically calculates costs for popular models from:
 - And more...
 
 Costs are displayed in the main view and can be sorted/filtered.
+
+### Cost Breakdown Command
+
+Analyze the total cost of a recorded session with the `cost` command:
+
+```bash
+llmproxy-go cost session.tape
+```
+
+This outputs a table showing:
+- Cost breakdown by model
+- Request count per model
+- Input/output token totals
+- Total session cost
 
 ## Tips and Tricks
 
