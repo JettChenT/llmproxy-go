@@ -227,6 +227,16 @@ func lookupGlobalModelCost(modelSlug string) *ModelCost {
 		}
 	}
 
+	// Try suffix matching in both directions:
+	// 1. modelSlug is suffix of dbSlug (e.g., "claude-sonnet-4-20250514-v1:0" matches "anthropic.claude-sonnet-4-20250514-v1:0")
+	// 2. dbSlug is suffix of modelSlug (e.g., "us.anthropic.claude-sonnet-4-20250514-v1:0" matches "anthropic.claude-sonnet-4-20250514-v1:0")
+	suffix := "." + modelSlug
+	for dbSlug, cost := range modelsDB.globalModels {
+		if strings.HasSuffix(dbSlug, suffix) || strings.HasSuffix(modelSlug, "."+dbSlug) {
+			return &cost
+		}
+	}
+
 	return nil
 }
 

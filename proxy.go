@@ -361,7 +361,7 @@ func extractTokenUsage(req *LLMRequest, responseBody []byte) {
 	req.OutputTokens = resp.Usage.CompletionTokens
 
 	// Calculate cost if we have provider and model info
-	if req.ProviderID != "" && req.Model != "" {
+	if req.Model != "" {
 		cost := GetModelCost(req.ProviderID, req.Model)
 		if cost != nil {
 			req.Cost = CalculateCost(cost, req.InputTokens, req.OutputTokens)
