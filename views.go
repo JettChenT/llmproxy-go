@@ -24,10 +24,8 @@ func (m model) renderSaveDialog() string {
 		Foreground(lipgloss.Color("#E2E8F0")).
 		Render("Enter filename:")
 
-	input := lipgloss.NewStyle().
-		Foreground(accentColor).
-		Bold(true).
-		Render(m.saveFilename + "█")
+	// Use the textinput's View method for proper cursor and input rendering
+	input := m.saveInput.View()
 
 	hint := lipgloss.NewStyle().
 		Foreground(dimColor).

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	zone "github.com/lrstanley/bubblezone"
@@ -60,7 +61,7 @@ type model struct {
 
 	// Save dialog
 	showSaveDialog  bool
-	saveFilename    string
+	saveInput       textinput.Model
 	saveMessage     string
 	saveMessageTime time.Time
 
@@ -68,6 +69,14 @@ type model struct {
 	collapsedMessages map[int]bool // Track collapsed state per message index
 	messagePositions  []int        // Line positions of each message in viewport
 	currentMsgIndex   int          // Currently focused message index
+}
+
+func newSaveInput() textinput.Model {
+	ti := textinput.New()
+	ti.Placeholder = "session.tape"
+	ti.CharLimit = 100
+	ti.Width = 40
+	return ti
 }
 
 func initialModel(listenAddr, targetURL string, saveTapeFile string) model {
@@ -82,6 +91,7 @@ func initialModel(listenAddr, targetURL string, saveTapeFile string) model {
 		sortField:         SortByID,
 		sortDirection:     SortAsc,
 		searchIndexCache:  make(map[int]string),
+		saveInput:         newSaveInput(),
 	}
 }
 
@@ -99,6 +109,7 @@ func initialTapeModel(tape *Tape) model {
 		sortField:         SortByID,
 		sortDirection:     SortAsc,
 		searchIndexCache:  make(map[int]string),
+		saveInput:         newSaveInput(),
 	}
 }
 
@@ -137,34 +148,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch key {
 			case "esc":
 				m.showSaveDialog = false
-				m.saveFilename = ""
+				m.saveInput.Reset()
+				m.saveInput.Blur()
+				return m, nil
 			case "enter":
-				if m.saveFilename != "" {
-					filename := m.saveFilename
-					if filepath.Ext(filename) == "" {
-						filename += ".tape"
+				filename := m.saveInput.Value()
+				if filename == "" {
+					filename = m.saveInput.Placeholder
+				}
+				if filepath.Ext(filename) == "" {
+					filename += ".tape"
+				}
+				go func() {
+					err := SaveSessionToTape(filename, m.listenAddr, m.targetURL)
+					if err != nil {
+						program.Send(tapeSaveErrorMsg{err: err})
+					} else {
+						program.Send(tapeSavedMsg{filename: filename})
 					}
-					go func() {
-						err := SaveSessionToTape(filename, m.listenAddr, m.targetURL)
-						if err != nil {
-							program.Send(tapeSaveErrorMsg{err: err})
-						} else {
-							program.Send(tapeSavedMsg{filename: filename})
-						}
-					}()
-					m.showSaveDialog = false
-					m.saveFilename = ""
-				}
-			case "backspace":
-				if len(m.saveFilename) > 0 {
-					m.saveFilename = m.saveFilename[:len(m.saveFilename)-1]
-				}
-			default:
-				if len(key) == 1 {
-					m.saveFilename += key
-				}
+				}()
+				m.showSaveDialog = false
+				m.saveInput.Reset()
+				m.saveInput.Blur()
+				return m, nil
 			}
-			return m, nil
+			// Let textinput handle all other keys
+			var cmd tea.Cmd
+			m.saveInput, cmd = m.saveInput.Update(msg)
+			return m, cmd
 		}
 
 		// Handle command mode (after pressing :)
@@ -275,7 +286,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Save tape (only in live mode, not tape playback)
 			if !m.showDetail && !m.tapeMode && len(m.requests) > 0 {
 				m.showSaveDialog = true
-				m.saveFilename = fmt.Sprintf("session-%s.tape", time.Now().Format("20060102-150405"))
+				m.saveInput.SetValue(fmt.Sprintf("session-%s", time.Now().Format("20060102-150405")))
+				m.saveInput.Focus()
+				return m, m.saveInput.Cursor.BlinkCmd()
 			}
 
 		// Tape playback controls
