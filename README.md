@@ -76,6 +76,8 @@ export OPENAI_API_BASE=http://localhost:8080
 
 ```bash
 llmproxy-go [flags]              # Start the proxy server
+llmproxy-go --config config.toml # Start with config file (supports multiple proxies)
+llmproxy-go --gen-config         # Print example configuration to stdout
 llmproxy-go cost <tape-file>     # Print cost breakdown for a tape file
 ```
 
@@ -83,6 +85,8 @@ llmproxy-go cost <tape-file>     # Print cost breakdown for a tape file
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--config` | - | Path to TOML config file for multi-proxy configuration |
+| `--gen-config` | - | Generate an example configuration file and exit |
 | `--listen` | `:8080` | Address to listen on (e.g., `:8080`, `0.0.0.0:8080`) |
 | `--target` | `http://localhost:3000` | Target URL to proxy to (e.g., `https://api.openai.com`) |
 | `--tape` | - | Open a tape file for inspection (replay mode) |
@@ -130,6 +134,86 @@ llmproxy-go --listen :8080 --target https://api.anthropic.com
 ```bash
 llmproxy-go --listen :8080 --target https://api.openai.com \
   --cache global --cache-simulate-latency
+```
+
+## Multi-Proxy Mode
+
+Run multiple proxies simultaneously, each forwarding to a different target. This is useful when working with multiple LLM providers at once.
+
+### Using Config File
+
+Generate an example config file:
+```bash
+llmproxy-go --gen-config > config.toml
+```
+
+Start with config file:
+```bash
+llmproxy-go --config config.toml
+```
+
+### Config File Format (TOML)
+
+```toml
+# Multiple proxies - each [[proxy]] section defines one proxy instance
+[[proxy]]
+name = "openai"
+listen = ":8080"
+target = "https://api.openai.com"
+
+[[proxy]]
+name = "anthropic"
+listen = ":8081"
+target = "https://api.anthropic.com"
+
+[[proxy]]
+name = "local"
+listen = ":8082"
+target = "http://localhost:11434"
+
+# Cache configuration (shared across all proxies)
+[cache]
+mode = "memory"          # "none", "memory", or "global"
+ttl = "24h"              # Supports "1h", "24h", "7d", etc.
+simulate_latency = false
+# dir = "/path/to/cache" # Only for "global" mode
+
+# Optional: auto-save all sessions to a tape file
+# save_tape = "session.tape"
+```
+
+### Config Options
+
+#### Proxy Settings
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | No | Human-readable name for the proxy (shown in TUI) |
+| `listen` | Yes | Address to listen on (e.g., `:8080`) |
+| `target` | Yes | Target URL to proxy to |
+
+#### Cache Settings
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `mode` | `none` | Cache mode: `none`, `memory`, or `global` |
+| `ttl` | `24h` | Cache TTL (e.g., `1h`, `24h`, `7d`) |
+| `simulate_latency` | `false` | Simulate original response latency |
+| `dir` | `~/.llmproxy-cache` | Directory for persistent cache |
+
+### Multi-Proxy TUI
+
+In multi-proxy mode, the TUI displays:
+- A **PROXY** column showing which proxy handled each request
+- Status bar showing all active proxies: `openai(:8080→openai.com) anthropic(:8081→api.anthropic.com)`
+
+Point your applications to the appropriate proxy port:
+```bash
+# OpenAI SDK → port 8080
+export OPENAI_BASE_URL=http://localhost:8080/v1
+
+# Anthropic SDK → port 8081  
+export ANTHROPIC_BASE_URL=http://localhost:8081
 ```
 
 ## Keyboard Shortcuts

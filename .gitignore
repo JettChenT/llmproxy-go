@@ -3,3 +3,4 @@ llmproxy-go
 # Added by goreleaser init:
 dist/
 .env
+config/*.toml

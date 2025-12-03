@@ -67,7 +67,12 @@ func (m *model) renderListView() string {
 		proxyInfo = statusBarStyle.Render(fmt.Sprintf("Tape: %s", m.tape.FilePath))
 	} else {
 		header = titleStyle.Render("⚡ LLM Proxy")
-		proxyInfo = statusBarStyle.Render(fmt.Sprintf("Listening: %s → %s", m.listenAddr, m.targetURL))
+		if m.listenAddr == "multi" {
+			// Multi-proxy mode: targetURL contains the formatted proxy list
+			proxyInfo = statusBarStyle.Render(m.targetURL)
+		} else {
+			proxyInfo = statusBarStyle.Render(fmt.Sprintf("%s → %s", m.listenAddr, m.targetURL))
+		}
 	}
 
 	// Show recording indicator if saving to tape
@@ -234,13 +239,19 @@ func (m *model) renderListView() string {
 	return zone.Scan(b.String())
 }
 
+// isMultiProxy returns true if running in multi-proxy mode
+func (m *model) isMultiProxy() bool {
+	return m.listenAddr == "multi"
+}
+
 // renderSortableHeaders renders clickable column headers with sort indicators
 func (m *model) renderSortableHeaders() string {
 	// Column widths (must match renderRequestRow)
 	const (
 		colID       = 6
 		colStatus   = 12
-		colModel    = 26
+		colProxy    = 12
+		colModel    = 24
 		colCode     = 6
 		colSize     = 10
 		colDuration = 12
@@ -277,13 +288,21 @@ func (m *model) renderSortableHeaders() string {
 		renderHeader("#", colID, SortByID, "sort-id"),
 		renderHeader("STATUS", colStatus, SortByStatus, "sort-status"),
 		renderHeader("MODEL", colModel, SortByModel, "sort-model"),
+	}
+
+	// Add PROXY column only in multi-proxy mode (after MODEL)
+	if m.isMultiProxy() {
+		headers = append(headers, renderHeader("PROXY", colProxy, SortByNone, "sort-proxy"))
+	}
+
+	headers = append(headers,
 		renderHeader("CODE", colCode, SortByCode, "sort-code"),
 		renderHeader("SIZE", colSize, SortBySize, "sort-size"),
 		renderHeader("DURATION", colDuration, SortByDuration, "sort-duration"),
 		renderHeader("IN TOK", colInTok, SortByInputTokens, "sort-intok"),
 		renderHeader("OUT TOK", colOutTok, SortByOutputTokens, "sort-outtok"),
 		renderHeader("COST", colCost, SortByCost, "sort-cost"),
-	}
+	)
 
 	row := lipgloss.NewStyle().Padding(0, 1).Render(strings.Join(headers, " "))
 	return row
@@ -322,11 +341,12 @@ func formatDuration(d time.Duration) string {
 }
 
 func (m model) renderRequestRow(req *LLMRequest, selected bool) string {
-	// Column widths
+	// Column widths (must match renderSortableHeaders)
 	const (
 		colID       = 6
 		colStatus   = 12
-		colModel    = 26
+		colProxy    = 12
+		colModel    = 24
 		colCode     = 6
 		colSize     = 10
 		colDuration = 12
@@ -359,7 +379,20 @@ func (m model) renderRequestRow(req *LLMRequest, selected bool) string {
 	}
 	statusStr := statusStyle.Render(fmt.Sprintf("%-*s", colStatus, statusText))
 
-	// Model column - pad first, then style
+	// Proxy column (only in multi-proxy mode)
+	var proxyStr string
+	if m.isMultiProxy() {
+		proxyName := req.ProxyName
+		if proxyName == "" {
+			proxyName = "-"
+		}
+		if len(proxyName) > colProxy-2 {
+			proxyName = proxyName[:colProxy-3] + "…"
+		}
+		proxyStr = lipgloss.NewStyle().Foreground(accentColor).Render(fmt.Sprintf("%-*s", colProxy, proxyName))
+	}
+
+	// Model column
 	modelName := req.Model
 	if len(modelName) > colModel-2 {
 		modelName = modelName[:colModel-3] + "…"
@@ -428,17 +461,33 @@ func (m model) renderRequestRow(req *LLMRequest, selected bool) string {
 	costStr := fmt.Sprintf("%-*s", colCost, costText)
 
 	// Build row with simple spacing
-	row := fmt.Sprintf("%s %s %s %s %s %s %s %s %s",
-		idStr,
-		statusStr,
-		modelStr,
-		codeStr,
-		sizeStr,
-		durationStr,
-		inTokStr,
-		outTokStr,
-		costStr,
-	)
+	var row string
+	if m.isMultiProxy() {
+		row = fmt.Sprintf("%s %s %s %s %s %s %s %s %s %s",
+			idStr,
+			statusStr,
+			modelStr,
+			proxyStr,
+			codeStr,
+			sizeStr,
+			durationStr,
+			inTokStr,
+			outTokStr,
+			costStr,
+		)
+	} else {
+		row = fmt.Sprintf("%s %s %s %s %s %s %s %s %s",
+			idStr,
+			statusStr,
+			modelStr,
+			codeStr,
+			sizeStr,
+			durationStr,
+			inTokStr,
+			outTokStr,
+			costStr,
+		)
+	}
 
 	if selected {
 		return selectedItemStyle.Render("▶ " + row)
@@ -457,6 +506,12 @@ func (m model) renderDetailView() string {
 	header := titleStyle.Render(fmt.Sprintf("Request #%d", m.selected.ID))
 	modelInfo := modelBadgeStyle.Render(m.selected.Model)
 
+	// Proxy indicator (for multi-proxy mode)
+	var proxyInfo string
+	if m.selected.ProxyName != "" && m.selected.ProxyName != "default" {
+		proxyInfo = lipgloss.NewStyle().Foreground(accentColor).Render("@" + m.selected.ProxyName)
+	}
+
 	// Cache indicator
 	var cacheInfo string
 	if m.selected.CachedResponse {
@@ -473,6 +528,9 @@ func (m model) renderDetailView() string {
 
 	// Build header line with all components
 	headerParts := []string{header, "  ", modelInfo}
+	if proxyInfo != "" {
+		headerParts = append(headerParts, proxyInfo)
+	}
 	if cacheInfo != "" {
 		headerParts = append(headerParts, "  ", cacheInfo)
 	}

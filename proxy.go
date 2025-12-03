@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -96,13 +97,27 @@ func decompressIfNeeded(data []byte, contentEncoding string) []byte {
 	return decompressed
 }
 
+// ProxyInstance represents a running proxy instance
+type ProxyInstance struct {
+	Name       string
+	ListenAddr string
+	TargetURL  string
+	server     *http.Server
+}
+
+// startProxy starts a single proxy instance (legacy function for backwards compatibility)
 func startProxy(listenAddr, targetURL string) {
-	// Load models.dev database in background
+	StartProxyInstance("default", listenAddr, targetURL)
+}
+
+// StartProxyInstance starts a named proxy instance
+func StartProxyInstance(name, listenAddr, targetURL string) error {
+	// Load models.dev database in background (only once)
 	LoadModelsDB()
 
 	target, err := url.Parse(targetURL)
 	if err != nil {
-		log.Fatalf("Invalid target URL: %v", err)
+		return fmt.Errorf("invalid target URL: %w", err)
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
@@ -118,7 +133,27 @@ func startProxy(listenAddr, targetURL string) {
 		return nil
 	}
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	// Create a new ServeMux for this proxy instance
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", createProxyHandler(name, listenAddr, target, proxy))
+
+	server := &http.Server{
+		Addr:    listenAddr,
+		Handler: mux,
+	}
+
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("[%s] Server error on %s: %v", name, listenAddr, err)
+		}
+	}()
+
+	return nil
+}
+
+// createProxyHandler creates an HTTP handler for a proxy instance
+func createProxyHandler(proxyName, listenAddr string, target *url.URL, proxy *httputil.ReverseProxy) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		startTime := time.Now()
 
 		// Read request body
@@ -194,6 +229,8 @@ func startProxy(listenAddr, targetURL string) {
 			ProviderID:           providerID,
 			EstimatedInputTokens: estimatedTokens,
 			CachedResponse:       cacheHit,
+			ProxyName:            proxyName,
+			ProxyListen:          listenAddr,
 		}
 		requests = append(requests, req)
 		requestsMu.Unlock()
@@ -320,13 +357,22 @@ func startProxy(listenAddr, targetURL string) {
 		if program != nil {
 			program.Send(requestUpdatedMsg{req: req})
 		}
-	})
+	}
+}
 
-	go func() {
-		if err := http.ListenAndServe(listenAddr, nil); err != nil {
-			log.Fatalf("Server error: %v", err)
+// StartMultipleProxies starts multiple proxy instances from configuration
+func StartMultipleProxies(proxies []ProxyConfig) error {
+	for _, p := range proxies {
+		name := p.Name
+		if name == "" {
+			name = p.Listen
 		}
-	}()
+		if err := StartProxyInstance(name, p.Listen, p.Target); err != nil {
+			return fmt.Errorf("failed to start proxy %s: %w", name, err)
+		}
+		log.Printf("Started proxy [%s]: %s -> %s", name, p.Listen, p.Target)
+	}
+	return nil
 }
 
 // extractTokenUsage extracts token usage from response and calculates cost
