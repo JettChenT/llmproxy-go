@@ -75,6 +75,23 @@ func isLLMEndpoint(path string) bool {
 	return false
 }
 
+// shouldSkipCache checks if the request has headers indicating caching should be skipped.
+// Supports Cache-Control: no-cache/no-store and X-No-Cache header.
+func shouldSkipCache(r *http.Request) bool {
+	// Check X-No-Cache header (any value means skip cache)
+	if r.Header.Get("X-No-Cache") != "" {
+		return true
+	}
+
+	// Check Cache-Control header for no-cache or no-store directives
+	cacheControl := strings.ToLower(r.Header.Get("Cache-Control"))
+	if strings.Contains(cacheControl, "no-cache") || strings.Contains(cacheControl, "no-store") {
+		return true
+	}
+
+	return false
+}
+
 // decompressIfNeeded decompresses gzip content if needed
 func decompressIfNeeded(data []byte, contentEncoding string) []byte {
 	if !strings.Contains(strings.ToLower(contentEncoding), "gzip") {
@@ -126,6 +143,12 @@ func StartProxyInstance(name, listenAddr, targetURL string) error {
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req)
 		req.Host = target.Host
+	}
+
+	// Suppress error logging to prevent TUI layout issues when clients disconnect
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		// Silently handle proxy errors (e.g., client disconnection)
+		// The TUI will show the request as failed via the response status
 	}
 
 	// Modify response to capture and potentially decompress
@@ -200,13 +223,14 @@ func createProxyHandler(proxyName, listenAddr string, target *url.URL, proxy *ht
 		// Estimate input tokens from request body size
 		estimatedTokens := EstimateInputTokens(string(requestBody))
 
-		// Generate cache key and check cache (only for non-streaming requests)
+		// Generate cache key and check cache (only for non-streaming requests without no-cache header)
 		cache := GetCache()
 		cacheKey := GenerateCacheKey(r.URL.Path, requestBody)
 		var cachedEntry *CacheEntry
 		var cacheHit bool
+		skipCache := shouldSkipCache(r)
 
-		if !isStreaming {
+		if !isStreaming && !skipCache {
 			cachedEntry, cacheHit = cache.Get(cacheKey)
 		}
 
@@ -330,8 +354,8 @@ func createProxyHandler(proxyName, listenAddr string, target *url.URL, proxy *ht
 		if recorder.statusCode >= 200 && recorder.statusCode < 300 {
 			req.Status = StatusComplete
 
-			// Store successful response in cache (non-streaming only)
-			if !isStreaming {
+			// Store successful response in cache (non-streaming only, respects no-cache header)
+			if !isStreaming && !skipCache {
 				cacheEntry := &CacheEntry{
 					ResponseBody:    decompressedBody,
 					ResponseHeaders: respHeaders,

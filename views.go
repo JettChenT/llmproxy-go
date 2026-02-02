@@ -194,7 +194,13 @@ func (m *model) renderListView() string {
 				fmt.Sprintf(" %s / %s", formatDuration(elapsed), formatDuration(total)))
 		}
 
-		help = helpStyle.Render("space play • / search • [/] step • -/+ speed • f follow • q quit") + playIndicator + followIndicator + " " + progressBar + timeDisplay
+		// Mouse mode indicator
+		mouseIndicator := ""
+		if !m.mouseEnabled {
+			mouseIndicator = lipgloss.NewStyle().Foreground(warningColor).Render(" [SELECT]")
+		}
+
+		help = helpStyle.Render("space play • / search • [/] step • -/+ speed • f follow • q quit") + playIndicator + followIndicator + mouseIndicator + " " + progressBar + timeDisplay
 	} else {
 		// Live mode help
 		followIndicator := ""
@@ -205,7 +211,12 @@ func (m *model) renderListView() string {
 		if m.numBuffer != "" {
 			numIndicator = lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(fmt.Sprintf(" [%s]", m.numBuffer))
 		}
-		help = helpStyle.Render("↑/↓ nav • / search • enter select • g/G top/bot • f follow • s save • q quit") + followIndicator + numIndicator
+		// Mouse mode indicator
+		mouseIndicator := ""
+		if !m.mouseEnabled {
+			mouseIndicator = lipgloss.NewStyle().Foreground(warningColor).Render(" [SELECT]")
+		}
+		help = helpStyle.Render("↑/↓ nav • / search • enter select • g/G top/bot • f follow • s save • q quit") + followIndicator + numIndicator + mouseIndicator
 	}
 
 	// Calculate total cost across display requests
@@ -560,10 +571,25 @@ func (m model) renderDetailView() string {
 
 	// Footer - show context-sensitive help
 	var help string
-	if m.activeTab == TabMessages || m.activeTab == TabOutput {
+	if m.activeTab == TabMessages {
 		help = helpStyle.Render("1-4/tab • n/N msg • c/C collapse • g/G top/end • ↑/↓ scroll • esc back")
+	} else if m.activeTab == TabOutput {
+		help = helpStyle.Render("1-4/tab • n/N msg • c copy • y copy both • g/G top/end • ↑/↓ scroll • esc back")
 	} else {
-		help = helpStyle.Render("1-4/tab tabs • g/G top/end • ↑/↓ scroll • esc/q back")
+		help = helpStyle.Render("1-4/tab tabs • c copy • y copy both • g/G top/end • ↑/↓ scroll • M select • esc/q back")
+	}
+
+	// Mouse mode indicator for detail view
+	if !m.mouseEnabled {
+		help += lipgloss.NewStyle().Foreground(warningColor).Render(" [SELECT]")
+	}
+
+	if m.copyMessage != "" {
+		msgStyle := lipgloss.NewStyle().Foreground(successColor)
+		if strings.HasPrefix(m.copyMessage, "✗") {
+			msgStyle = lipgloss.NewStyle().Foreground(errorColor)
+		}
+		help += " " + msgStyle.Render(m.copyMessage)
 	}
 
 	// Build right side status
@@ -973,11 +999,14 @@ func (m model) renderRawRequest() string {
 	b.WriteString(labelStyle.Render(fmt.Sprintf("═══ Body (%s) ═══", formatBytes(len(m.selected.RequestBody)))))
 	b.WriteString("\n\n")
 
+	// Content width accounting for viewport padding
+	contentWidth := m.width - 8
+
 	var prettyJSON bytes.Buffer
 	if err := json.Indent(&prettyJSON, m.selected.RequestBody, "", "  "); err != nil {
-		b.WriteString(sanitizeForTerminal(string(m.selected.RequestBody)))
+		b.WriteString(wrapText(sanitizeForTerminal(string(m.selected.RequestBody)), contentWidth))
 	} else {
-		b.WriteString(highlightJSON(prettyJSON.String()))
+		b.WriteString(highlightJSONWithWidth(prettyJSON.String(), contentWidth))
 	}
 
 	return b.String()
@@ -1037,11 +1066,14 @@ func (m model) renderRawResponse() string {
 	b.WriteString(labelStyle.Render(fmt.Sprintf("═══ Body (%s) ═══", formatBytes(len(m.selected.ResponseBody)))))
 	b.WriteString("\n\n")
 
+	// Content width accounting for viewport padding
+	contentWidth := m.width - 8
+
 	var prettyJSON bytes.Buffer
 	if err := json.Indent(&prettyJSON, m.selected.ResponseBody, "", "  "); err != nil {
-		b.WriteString(sanitizeForTerminal(string(m.selected.ResponseBody)))
+		b.WriteString(wrapText(sanitizeForTerminal(string(m.selected.ResponseBody)), contentWidth))
 	} else {
-		b.WriteString(highlightJSON(prettyJSON.String()))
+		b.WriteString(highlightJSONWithWidth(prettyJSON.String(), contentWidth))
 	}
 
 	return b.String()

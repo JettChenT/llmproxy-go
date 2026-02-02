@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -63,6 +64,9 @@ Tape files contain recorded API requests and responses.`,
 			fmt.Fprintf(os.Stderr, "Error loading tape: %v\n", err)
 			os.Exit(1)
 		}
+
+		// Suppress log output during TUI operation to prevent layout issues
+		log.SetOutput(io.Discard)
 
 		// Start the TUI in tape mode
 		program = tea.NewProgram(
@@ -171,6 +175,9 @@ func runWithConfig(configPath string) {
 	listenAddrs := formatListenAddrs(config.Proxies)
 	targetURLs := formatTargetURLs(config.Proxies)
 
+	// Suppress log output during TUI operation to prevent layout issues
+	log.SetOutput(io.Discard)
+
 	// Start the TUI
 	program = tea.NewProgram(
 		initialModel(listenAddrs, targetURLs, saveTapeFile),
@@ -226,6 +233,9 @@ func runSingleProxy() {
 
 	// Start the proxy server
 	startProxy(listenAddr, targetURL)
+
+	// Suppress log output during TUI operation to prevent layout issues
+	log.SetOutput(io.Discard)
 
 	// Start the TUI
 	program = tea.NewProgram(

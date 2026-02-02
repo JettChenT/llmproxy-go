@@ -69,6 +69,13 @@ type model struct {
 	collapsedMessages map[int]bool // Track collapsed state per message index
 	messagePositions  []int        // Line positions of each message in viewport
 	currentMsgIndex   int          // Currently focused message index
+
+	// Mouse mode
+	mouseEnabled bool // True when mouse capture is enabled (default true)
+
+	// Copy feedback
+	copyMessage     string
+	copyMessageTime time.Time
 }
 
 func newSaveInput() textinput.Model {
@@ -92,6 +99,7 @@ func initialModel(listenAddr, targetURL string, saveTapeFile string) model {
 		sortDirection:     SortAsc,
 		searchIndexCache:  make(map[int]string),
 		saveInput:         newSaveInput(),
+		mouseEnabled:      true,
 	}
 }
 
@@ -110,6 +118,7 @@ func initialTapeModel(tape *Tape) model {
 		sortDirection:     SortAsc,
 		searchIndexCache:  make(map[int]string),
 		saveInput:         newSaveInput(),
+		mouseEnabled:      true,
 	}
 }
 
@@ -450,6 +459,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
+		case "M":
+			// Toggle mouse capture mode (Shift+M to allow text selection)
+			m.mouseEnabled = !m.mouseEnabled
+			if m.mouseEnabled {
+				return m, tea.EnableMouseCellMotion
+			}
+			return m, tea.DisableMouse
+
 		case "/":
 			// Enter search mode
 			if !m.showDetail {
@@ -525,34 +542,46 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.viewport.GotoTop()
 			}
 
-		case "c":
-			// Toggle collapse current message in Messages tab
-			if m.showDetail && m.activeTab == TabMessages {
-				if m.collapsedMessages == nil {
-					m.collapsedMessages = make(map[int]bool)
+	case "c":
+			if m.showDetail {
+				switch m.activeTab {
+				case TabMessages:
+					// Toggle collapse current message in Messages tab
+					if m.collapsedMessages == nil {
+						m.collapsedMessages = make(map[int]bool)
+					}
+					m.collapsedMessages[m.currentMsgIndex] = !m.collapsedMessages[m.currentMsgIndex]
+					m.viewport.SetContent(m.renderTabContent())
+				case TabOutput, TabRawInput, TabRawOutput:
+					m.copyActiveTab()
 				}
-				m.collapsedMessages[m.currentMsgIndex] = !m.collapsedMessages[m.currentMsgIndex]
-				m.viewport.SetContent(m.renderTabContent())
 			}
 
 		case "C":
-			// Collapse/expand all messages in Messages tab
-			if m.showDetail && m.activeTab == TabMessages {
-				if m.collapsedMessages == nil {
-					m.collapsedMessages = make(map[int]bool)
-				}
-				// Check if any are expanded - if so, collapse all; otherwise expand all
-				anyExpanded := false
-				for i := 0; i < len(m.messagePositions); i++ {
-					if !m.collapsedMessages[i] {
-						anyExpanded = true
-						break
+			if m.showDetail {
+				if m.activeTab == TabMessages {
+					// Collapse/expand all messages in Messages tab
+					if m.collapsedMessages == nil {
+						m.collapsedMessages = make(map[int]bool)
 					}
+					// Check if any are expanded - if so, collapse all; otherwise expand all
+					anyExpanded := false
+					for i := 0; i < len(m.messagePositions); i++ {
+						if !m.collapsedMessages[i] {
+							anyExpanded = true
+							break
+						}
+					}
+					for i := 0; i < len(m.messagePositions); i++ {
+						m.collapsedMessages[i] = anyExpanded
+					}
+					m.viewport.SetContent(m.renderTabContent())
 				}
-				for i := 0; i < len(m.messagePositions); i++ {
-					m.collapsedMessages[i] = anyExpanded
-				}
-				m.viewport.SetContent(m.renderTabContent())
+			}
+
+		case "y":
+			if m.showDetail && m.activeTab != TabMessages {
+				m.copyInputOutput()
 			}
 
 		case "n":
@@ -777,6 +806,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.saveMessage != "" && time.Since(m.saveMessageTime) > 3*time.Second {
 				m.saveMessage = ""
 			}
+			if m.copyMessage != "" && time.Since(m.copyMessageTime) > 3*time.Second {
+				m.copyMessage = ""
+			}
 			return m, tea.Batch(cmds...)
 		}
 
@@ -797,6 +829,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Clear save message after 3 seconds
 		if m.saveMessage != "" && time.Since(m.saveMessageTime) > 3*time.Second {
 			m.saveMessage = ""
+		}
+
+		if m.copyMessage != "" && time.Since(m.copyMessageTime) > 3*time.Second {
+			m.copyMessage = ""
 		}
 
 		cmds = append(cmds, tickCmd())

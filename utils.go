@@ -12,6 +12,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wordwrap"
 )
 
 // Cached markdown renderers by width
@@ -200,6 +201,11 @@ func sanitizeForTerminal(s string) string {
 
 // highlightJSON applies syntax highlighting to JSON string using chroma
 func highlightJSON(s string) string {
+	return highlightJSONWithWidth(s, 0)
+}
+
+// highlightJSONWithWidth applies syntax highlighting and wraps to the given width
+func highlightJSONWithWidth(s string, width int) string {
 	// First sanitize the input
 	s = sanitizeForTerminal(s)
 
@@ -232,5 +238,12 @@ func highlightJSON(s string) string {
 		return s
 	}
 
-	return buf.String()
+	result := buf.String()
+
+	// Apply ANSI-aware word wrapping if width is specified
+	if width > 0 {
+		result = wordwrap.String(result, width)
+	}
+
+	return result
 }
