@@ -76,6 +76,9 @@ type model struct {
 	// Copy feedback
 	copyMessage     string
 	copyMessageTime time.Time
+
+	// Image references for current request
+	imageRefs []ImageRef
 }
 
 func newSaveInput() textinput.Model {
@@ -634,6 +637,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.currentMsgIndex = i
 							m.viewport.SetContent(m.renderTabContent())
 							break
+						}
+					}
+
+					// Handle clicks on image placeholders
+					for _, img := range m.imageRefs {
+						imgZoneID := fmt.Sprintf("img-%d", img.Index)
+						if zone.Get(imgZoneID).InBounds(msg) {
+							if err := openImage(img); err != nil {
+								m.copyMessage = fmt.Sprintf("✗ Failed to open image: %v", err)
+							} else {
+								m.copyMessage = fmt.Sprintf("✓ Opened Image %d", img.Index)
+							}
+							m.copyMessageTime = time.Now()
+							return m, nil
 						}
 					}
 				}

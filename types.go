@@ -132,3 +132,10 @@ const (
 	SortAsc SortDirection = iota
 	SortDesc
 )
+
+// ImageRef represents a reference to an image found in a request/response
+type ImageRef struct {
+	Index   int    // 1-based index for display
+	URL     string // URL or base64 data URL
+	IsBase64 bool  // True if the URL is a base64 data URL
+}

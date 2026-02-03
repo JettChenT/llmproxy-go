@@ -572,7 +572,7 @@ func (m model) renderDetailView() string {
 	// Footer - show context-sensitive help
 	var help string
 	if m.activeTab == TabMessages {
-		help = helpStyle.Render("1-4/tab • n/N msg • c/C collapse • g/G top/end • ↑/↓ scroll • esc back")
+		help = helpStyle.Render("1-4/tab • n/N msg • c/C collapse • click [Image] to open • g/G top/end • ↑/↓ scroll • esc back")
 	} else if m.activeTab == TabOutput {
 		help = helpStyle.Render("1-4/tab • n/N msg • c copy • y copy both • g/G top/end • ↑/↓ scroll • esc back")
 	} else {
@@ -640,6 +640,10 @@ func (m *model) renderMessagesTab() string {
 
 	// Content width for boxes (viewport width minus border/padding)
 	contentWidth := m.width - 10
+
+	// Reset image references - we'll collect them as we render
+	m.imageRefs = nil
+	imageCounter := 0
 
 	// Request metadata
 	metaBox := lipgloss.NewStyle().
@@ -724,7 +728,7 @@ func (m *model) renderMessagesTab() string {
 		case string:
 			content = c
 		case []interface{}:
-			// Vision API format
+			// Vision API format - arrays unmarshal as []interface{}
 			var parts []string
 			for _, part := range c {
 				if p, ok := part.(map[string]interface{}); ok {
@@ -734,7 +738,17 @@ func (m *model) renderMessagesTab() string {
 								parts = append(parts, text)
 							}
 						} else if t == "image_url" {
-							parts = append(parts, "[Image]")
+							// Extract image URL and create a clickable reference
+							imageCounter++
+							if url, isBase64 := extractImageURL(p); url != "" {
+								m.imageRefs = append(m.imageRefs, ImageRef{
+									Index:    imageCounter,
+									URL:      url,
+									IsBase64: isBase64,
+								})
+							}
+							// Use a plain text placeholder - will be styled after sanitization
+							parts = append(parts, fmt.Sprintf("__IMAGE_PLACEHOLDER_%d__", imageCounter))
 						}
 					}
 				}
@@ -760,6 +774,11 @@ func (m *model) renderMessagesTab() string {
 		if m.collapsedMessages[i] {
 			// Collapsed view - just show header with content preview
 			preview := content
+			// Replace image placeholders with simple text for preview
+			for _, img := range m.imageRefs {
+				placeholder := fmt.Sprintf("__IMAGE_PLACEHOLDER_%d__", img.Index)
+				preview = strings.Replace(preview, placeholder, fmt.Sprintf("[Image %d]", img.Index), 1)
+			}
 			if len(preview) > 60 {
 				preview = preview[:57] + "..."
 			}
@@ -785,10 +804,11 @@ func (m *model) renderMessagesTab() string {
 				Padding(0, 2).
 				Width(contentWidth)
 
-			msgContent = fmt.Sprintf("%s\n\n%s", clickableHeader, renderMarkdown(content, textWidth))
+			renderedContent := m.replaceImagePlaceholders(renderMarkdown(content, textWidth))
+			msgContent = fmt.Sprintf("%s\n\n%s", clickableHeader, renderedContent)
 
 			if msg.Name != "" {
-				msgContent = fmt.Sprintf("%s (%s)\n\n%s", clickableHeader, msg.Name, renderMarkdown(content, textWidth))
+				msgContent = fmt.Sprintf("%s (%s)\n\n%s", clickableHeader, msg.Name, renderedContent)
 			}
 
 			// Handle tool call ID for tool response messages
@@ -797,14 +817,14 @@ func (m *model) renderMessagesTab() string {
 					Foreground(warningColor).
 					Italic(true).
 					Render(fmt.Sprintf("Response to: %s", msg.ToolCallID))
-				msgContent = fmt.Sprintf("%s\n%s\n\n%s", clickableHeader, toolCallLabel, renderMarkdown(content, textWidth))
+				msgContent = fmt.Sprintf("%s\n%s\n\n%s", clickableHeader, toolCallLabel, renderedContent)
 			}
 
 			// Handle tool calls in message
 			if len(msg.ToolCalls) > 0 {
 				msgContent = clickableHeader + "\n\n"
 				if content != "" && content != "null" {
-					msgContent += renderMarkdown(content, textWidth) + "\n\n"
+					msgContent += renderedContent + "\n\n"
 				}
 				msgContent += m.renderToolCalls(msg.ToolCalls, textWidth)
 			}
@@ -821,6 +841,21 @@ func (m *model) renderMessagesTab() string {
 	}
 
 	return b.String()
+}
+
+// replaceImagePlaceholders replaces __IMAGE_PLACEHOLDER_N__ with styled clickable image links
+func (m *model) replaceImagePlaceholders(content string) string {
+	for _, img := range m.imageRefs {
+		placeholder := fmt.Sprintf("__IMAGE_PLACEHOLDER_%d__", img.Index)
+		imgZoneID := fmt.Sprintf("img-%d", img.Index)
+		imgStyle := lipgloss.NewStyle().
+			Foreground(accentColor).
+			Bold(true).
+			Underline(true)
+		styledPlaceholder := zone.Mark(imgZoneID, imgStyle.Render(fmt.Sprintf("[Image %d]", img.Index)))
+		content = strings.Replace(content, placeholder, styledPlaceholder, 1)
+	}
+	return content
 }
 
 func (m *model) renderOutputTab() string {
@@ -1002,9 +1037,12 @@ func (m model) renderRawRequest() string {
 	// Content width accounting for viewport padding
 	contentWidth := m.width - 8
 
+	// Replace base64 image data with placeholders to prevent lag
+	bodyToRender := replaceBase64InJSON(m.selected.RequestBody, m.imageRefs)
+
 	var prettyJSON bytes.Buffer
-	if err := json.Indent(&prettyJSON, m.selected.RequestBody, "", "  "); err != nil {
-		b.WriteString(wrapText(sanitizeForTerminal(string(m.selected.RequestBody)), contentWidth))
+	if err := json.Indent(&prettyJSON, bodyToRender, "", "  "); err != nil {
+		b.WriteString(wrapText(sanitizeForTerminal(string(bodyToRender)), contentWidth))
 	} else {
 		b.WriteString(highlightJSONWithWidth(prettyJSON.String(), contentWidth))
 	}
@@ -1069,9 +1107,12 @@ func (m model) renderRawResponse() string {
 	// Content width accounting for viewport padding
 	contentWidth := m.width - 8
 
+	// Replace base64 image data with placeholders to prevent lag
+	bodyToRender := replaceBase64InJSON(m.selected.ResponseBody, m.imageRefs)
+
 	var prettyJSON bytes.Buffer
-	if err := json.Indent(&prettyJSON, m.selected.ResponseBody, "", "  "); err != nil {
-		b.WriteString(wrapText(sanitizeForTerminal(string(m.selected.ResponseBody)), contentWidth))
+	if err := json.Indent(&prettyJSON, bodyToRender, "", "  "); err != nil {
+		b.WriteString(wrapText(sanitizeForTerminal(string(bodyToRender)), contentWidth))
 	} else {
 		b.WriteString(highlightJSONWithWidth(prettyJSON.String(), contentWidth))
 	}

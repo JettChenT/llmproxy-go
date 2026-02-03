@@ -120,6 +120,9 @@ func init() {
 }
 
 func main() {
+	// Clean up any temp images on exit
+	defer cleanupTempImages()
+
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
