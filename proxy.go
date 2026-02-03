@@ -269,6 +269,59 @@ func createProxyHandler(proxyName, listenAddr string, target *url.URL, proxy *ht
 			tapeWriter.WriteRequestStart(req)
 		}
 
+		var finalizeOnce sync.Once
+		finalize := func(statusCode int, respHeaders map[string][]string, responseBody []byte, responseSize int) {
+			finalizeOnce.Do(func() {
+				req.Duration = time.Since(startTime)
+				req.StatusCode = statusCode
+				req.ResponseHeaders = respHeaders
+				req.ResponseBody = responseBody
+				req.ResponseSize = responseSize
+
+				if statusCode >= 200 && statusCode < 300 {
+					req.Status = StatusComplete
+
+					// Store successful response in cache (non-streaming only, respects no-cache header)
+					if !isStreaming && !skipCache {
+						cacheEntry := &CacheEntry{
+							ResponseBody:    responseBody,
+							ResponseHeaders: respHeaders,
+							StatusCode:      statusCode,
+							Duration:        req.Duration,
+							CreatedAt:       time.Now(),
+						}
+						cache.Set(cacheKey, cacheEntry)
+					}
+				} else {
+					req.Status = StatusError
+				}
+
+				if len(responseBody) > 0 {
+					// Extract token usage from response (non-blocking)
+					go extractTokenUsage(req, responseBody)
+				}
+
+				// Write to tape if recording
+				if tapeWriter != nil {
+					tapeWriter.WriteRequestComplete(req)
+				}
+
+				// Notify TUI
+				if program != nil {
+					program.Send(requestUpdatedMsg{req: req})
+				}
+			})
+		}
+
+		cancelDone := make(chan struct{})
+		go func() {
+			select {
+			case <-r.Context().Done():
+				finalize(499, nil, nil, 0)
+			case <-cancelDone:
+			}
+		}()
+
 		// Handle cache hit
 		if cacheHit && cachedEntry != nil {
 			// Simulate latency if configured
@@ -298,38 +351,18 @@ func createProxyHandler(proxyName, listenAddr string, target *url.URL, proxy *ht
 			w.Header().Set("Content-Length", strconv.Itoa(len(cachedEntry.ResponseBody)))
 			w.WriteHeader(cachedEntry.StatusCode)
 			w.Write(cachedEntry.ResponseBody)
-
-			// Update request with cached response
-			req.Duration = time.Since(startTime)
-			req.StatusCode = cachedEntry.StatusCode
-			req.ResponseHeaders = cachedEntry.ResponseHeaders
-			req.ResponseBody = cachedEntry.ResponseBody
-			req.ResponseSize = len(cachedEntry.ResponseBody)
-
-			if cachedEntry.StatusCode >= 200 && cachedEntry.StatusCode < 300 {
-				req.Status = StatusComplete
-			} else {
-				req.Status = StatusError
-			}
-
-			// Extract token usage from cached response
-			go extractTokenUsage(req, cachedEntry.ResponseBody)
-
-			// Write to tape if recording
-			if tapeWriter != nil {
-				tapeWriter.WriteRequestComplete(req)
-			}
-
-			// Notify TUI
-			if program != nil {
-				program.Send(requestUpdatedMsg{req: req})
-			}
+			close(cancelDone)
+			finalize(cachedEntry.StatusCode, cachedEntry.ResponseHeaders, cachedEntry.ResponseBody, len(cachedEntry.ResponseBody))
 			return
 		}
 
 		// Proxy the request
 		recorder := newResponseRecorder(w)
 		proxy.ServeHTTP(recorder, r)
+		close(cancelDone)
+		if r.Context().Err() != nil {
+			return
+		}
 
 		// Get Content-Encoding from response headers
 		contentEncoding := recorder.Header().Get("Content-Encoding")
@@ -344,43 +377,7 @@ func createProxyHandler(proxyName, listenAddr string, target *url.URL, proxy *ht
 		responseBody := recorder.body.Bytes()
 		decompressedBody := decompressIfNeeded(responseBody, contentEncoding)
 
-		// Update request with response
-		req.Duration = time.Since(startTime)
-		req.StatusCode = recorder.statusCode
-		req.ResponseHeaders = respHeaders
-		req.ResponseBody = decompressedBody
-		req.ResponseSize = len(responseBody) // Original size
-
-		if recorder.statusCode >= 200 && recorder.statusCode < 300 {
-			req.Status = StatusComplete
-
-			// Store successful response in cache (non-streaming only, respects no-cache header)
-			if !isStreaming && !skipCache {
-				cacheEntry := &CacheEntry{
-					ResponseBody:    decompressedBody,
-					ResponseHeaders: respHeaders,
-					StatusCode:      recorder.statusCode,
-					Duration:        req.Duration,
-					CreatedAt:       time.Now(),
-				}
-				cache.Set(cacheKey, cacheEntry)
-			}
-		} else {
-			req.Status = StatusError
-		}
-
-		// Extract token usage from response (non-blocking)
-		go extractTokenUsage(req, decompressedBody)
-
-		// Write to tape if recording
-		if tapeWriter != nil {
-			tapeWriter.WriteRequestComplete(req)
-		}
-
-		// Notify TUI
-		if program != nil {
-			program.Send(requestUpdatedMsg{req: req})
-		}
+		finalize(recorder.statusCode, respHeaders, decompressedBody, len(responseBody))
 	}
 }
 
