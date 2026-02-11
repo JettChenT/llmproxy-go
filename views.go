@@ -838,7 +838,7 @@ func (m *model) renderMessagesTab() string {
 								})
 							}
 							// Use a plain text placeholder - will be styled after sanitization
-							parts = append(parts, fmt.Sprintf("__IMAGE_PLACEHOLDER_%d__", imageCounter))
+							parts = append(parts, fmt.Sprintf("{IMG_PLACEHOLDER_%d}", imageCounter))
 						}
 					}
 				}
@@ -866,7 +866,7 @@ func (m *model) renderMessagesTab() string {
 			preview := content
 			// Replace image placeholders with simple text for preview
 			for _, img := range m.imageRefs {
-				placeholder := fmt.Sprintf("__IMAGE_PLACEHOLDER_%d__", img.Index)
+				placeholder := fmt.Sprintf("{IMG_PLACEHOLDER_%d}", img.Index)
 				preview = strings.Replace(preview, placeholder, fmt.Sprintf("[Image %d]", img.Index), 1)
 			}
 			if len(preview) > 60 {
@@ -933,10 +933,10 @@ func (m *model) renderMessagesTab() string {
 	return b.String()
 }
 
-// replaceImagePlaceholders replaces __IMAGE_PLACEHOLDER_N__ with styled clickable image links
+// replaceImagePlaceholders replaces {IMG_PLACEHOLDER_N} with styled clickable image links
 func (m *model) replaceImagePlaceholders(content string) string {
 	for _, img := range m.imageRefs {
-		placeholder := fmt.Sprintf("__IMAGE_PLACEHOLDER_%d__", img.Index)
+		placeholder := fmt.Sprintf("{IMG_PLACEHOLDER_%d}", img.Index)
 		imgZoneID := fmt.Sprintf("img-%d", img.Index)
 		imgStyle := lipgloss.NewStyle().
 			Foreground(accentColor).
@@ -1387,17 +1387,33 @@ func (m *model) renderAnthropicMessagesTab() string {
 							IsBase64: isBase64,
 						})
 					}
-					parts = append(parts, fmt.Sprintf("__IMAGE_PLACEHOLDER_%d__", imageCounter))
+					parts = append(parts, fmt.Sprintf("{IMG_PLACEHOLDER_%d}", imageCounter))
 				case "tool_result":
 					switch rc := bl["content"].(type) {
 					case string:
 						parts = append(parts, rc)
 					case []interface{}:
 						for _, rb := range rc {
-							if mp, ok := rb.(map[string]interface{}); ok {
+							mp, ok := rb.(map[string]interface{})
+							if !ok {
+								continue
+							}
+							rbType, _ := mp["type"].(string)
+							switch rbType {
+							case "text":
 								if text, ok := mp["text"].(string); ok {
 									parts = append(parts, text)
 								}
+							case "image":
+								imageCounter++
+								if url, isBase64 := extractAnthropicImageURL(mp); url != "" {
+									m.imageRefs = append(m.imageRefs, ImageRef{
+										Index:    imageCounter,
+										URL:      url,
+										IsBase64: isBase64,
+									})
+								}
+								parts = append(parts, fmt.Sprintf("{IMG_PLACEHOLDER_%d}", imageCounter))
 							}
 						}
 					}
@@ -1464,7 +1480,7 @@ func (m *model) renderAnthropicMessagesTab() string {
 			preview := content
 			// Replace image placeholders with simple text for preview
 			for _, img := range m.imageRefs {
-				placeholder := fmt.Sprintf("__IMAGE_PLACEHOLDER_%d__", img.Index)
+				placeholder := fmt.Sprintf("{IMG_PLACEHOLDER_%d}", img.Index)
 				preview = strings.Replace(preview, placeholder, fmt.Sprintf("[Image %d]", img.Index), 1)
 			}
 			if len(preview) > 60 {

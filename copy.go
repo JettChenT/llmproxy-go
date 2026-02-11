@@ -82,6 +82,9 @@ func rawBodyCopyText(body []byte, label string) (string, string, error) {
 		return "", label, fmt.Errorf("no %s", label)
 	}
 
+	// Truncate long base64 strings (e.g. images) to match the raw view display
+	body = truncateLongBase64Strings(body)
+
 	var pretty bytes.Buffer
 	if err := json.Indent(&pretty, body, "", "  "); err == nil {
 		return pretty.String(), label, nil

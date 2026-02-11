@@ -78,8 +78,12 @@ func renderMarkdown(content string, width int) string {
 		return wrapText(content, width)
 	}
 
-	// Trim trailing whitespace/newlines that glamour might add
-	return strings.TrimSpace(rendered)
+	result := strings.TrimSpace(rendered)
+	// If glamour stripped image placeholders, bypass it and use plain text
+	if strings.Contains(content, "{IMG_PLACEHOLDER_") && !strings.Contains(result, "{IMG_PLACEHOLDER_") {
+		return content
+	}
+	return result
 }
 
 // parseNumber parses a string into an integer
