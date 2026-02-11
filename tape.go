@@ -48,6 +48,7 @@ type TapeRequestData struct {
 	StatusCode           int                 `json:"status_code"`
 	StartTime            time.Time           `json:"start_time"`
 	Duration             time.Duration       `json:"duration"`
+	TTFT                 time.Duration       `json:"ttft,omitempty"`
 	RequestHeaders       map[string][]string `json:"request_headers,omitempty"`
 	ResponseHeaders      map[string][]string `json:"response_headers,omitempty"`
 	RequestBody          []byte              `json:"request_body,omitempty"`
@@ -178,6 +179,7 @@ func requestToTapeData(req *LLMRequest) TapeRequestData {
 		StatusCode:           req.StatusCode,
 		StartTime:            req.StartTime,
 		Duration:             req.Duration,
+		TTFT:                 req.TTFT,
 		RequestHeaders:       req.RequestHeaders,
 		ResponseHeaders:      req.ResponseHeaders,
 		RequestBody:          req.RequestBody,
@@ -206,6 +208,7 @@ func tapeDataToRequest(data TapeRequestData) *LLMRequest {
 		StatusCode:           data.StatusCode,
 		StartTime:            data.StartTime,
 		Duration:             data.Duration,
+		TTFT:                 data.TTFT,
 		RequestHeaders:       data.RequestHeaders,
 		ResponseHeaders:      data.ResponseHeaders,
 		RequestBody:          data.RequestBody,

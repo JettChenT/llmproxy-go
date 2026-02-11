@@ -30,9 +30,10 @@ var (
 // Response recorder for capturing response
 type responseRecorder struct {
 	http.ResponseWriter
-	statusCode  int
-	body        *bytes.Buffer
-	wroteHeader bool
+	statusCode     int
+	body           *bytes.Buffer
+	wroteHeader    bool
+	firstWriteTime time.Time // Time of first Write() call (TTFT proxy)
 }
 
 func newResponseRecorder(w http.ResponseWriter) *responseRecorder {
@@ -50,6 +51,9 @@ func (r *responseRecorder) WriteHeader(code int) {
 }
 
 func (r *responseRecorder) Write(b []byte) (int, error) {
+	if r.firstWriteTime.IsZero() {
+		r.firstWriteTime = time.Now()
+	}
 	r.body.Write(b)
 	return r.ResponseWriter.Write(b)
 }
@@ -379,6 +383,11 @@ func createProxyHandler(proxyName, listenAddr string, target *url.URL, proxy *ht
 		close(cancelDone)
 		if r.Context().Err() != nil {
 			return
+		}
+
+		// Track TTFT (time from request start to first response byte)
+		if !recorder.firstWriteTime.IsZero() {
+			req.TTFT = recorder.firstWriteTime.Sub(startTime)
 		}
 
 		// Get Content-Encoding from response headers

@@ -25,6 +25,7 @@ type LLMRequest struct {
 	StatusCode      int
 	StartTime       time.Time
 	Duration        time.Duration
+	TTFT            time.Duration // Time to first token (first response byte)
 	RequestHeaders  map[string][]string
 	ResponseHeaders map[string][]string
 	RequestBody     []byte

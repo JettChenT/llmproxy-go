@@ -501,10 +501,14 @@ func (m model) renderRequestRow(req *LLMRequest, selected bool) string {
 	}
 	sizeStr := fmt.Sprintf("%-*s", colSize, sizeText)
 
-	// Duration column (no styling needed)
+	// Duration column - show TTFT/total for streaming, total only for non-streaming
 	durationText := "-"
 	if req.Duration > 0 {
-		durationText = fmt.Sprintf("%v", req.Duration.Round(time.Millisecond))
+		if req.IsStreaming && req.TTFT > 0 {
+			durationText = fmt.Sprintf("%s/%s", formatDuration(req.TTFT), formatDuration(req.Duration))
+		} else {
+			durationText = formatDuration(req.Duration)
+		}
 	}
 	durationStr := fmt.Sprintf("%-*s", colDuration, durationText)
 
@@ -603,6 +607,17 @@ func (m model) renderDetailView() string {
 		costInfo = lipgloss.NewStyle().Foreground(dimColor).Render("(no pricing)")
 	}
 
+	// Build timing info string
+	var timingInfo string
+	if m.selected.Duration > 0 {
+		if m.selected.IsStreaming && m.selected.TTFT > 0 {
+			timingInfo = lipgloss.NewStyle().Foreground(dimColor).Render(
+				fmt.Sprintf("TTFT %s | Total %s", formatDuration(m.selected.TTFT), formatDuration(m.selected.Duration)))
+		} else {
+			timingInfo = lipgloss.NewStyle().Foreground(dimColor).Render(formatDuration(m.selected.Duration))
+		}
+	}
+
 	// Build header line with all components
 	headerParts := []string{header, "  ", modelInfo}
 	if proxyInfo != "" {
@@ -610,6 +625,9 @@ func (m model) renderDetailView() string {
 	}
 	if cacheInfo != "" {
 		headerParts = append(headerParts, "  ", cacheInfo)
+	}
+	if timingInfo != "" {
+		headerParts = append(headerParts, "  ", timingInfo)
 	}
 	if costInfo != "" {
 		headerParts = append(headerParts, "  ", costInfo)
@@ -970,6 +988,12 @@ func (m *model) renderOutputTab() string {
 		labelStyle.Render("Completion Tokens:"), resp.Usage.CompletionTokens,
 		labelStyle.Render("Total Tokens:"), resp.Usage.TotalTokens,
 	)
+	if m.selected.TTFT > 0 {
+		meta += fmt.Sprintf("\n%s %s", labelStyle.Render("TTFT:"), formatDuration(m.selected.TTFT))
+	}
+	if m.selected.Duration > 0 {
+		meta += fmt.Sprintf("\n%s %s", labelStyle.Render("Total Latency:"), formatDuration(m.selected.Duration))
+	}
 	metaRendered := metaBox.Render(meta)
 	b.WriteString(metaRendered)
 	b.WriteString("\n\n")
@@ -1529,6 +1553,12 @@ func (m *model) renderAnthropicOutputTab() string {
 		labelStyle.Render("Output Tokens:"), resp.Usage.OutputTokens,
 		labelStyle.Render("Stop Reason:"), resp.StopReason,
 	)
+	if m.selected.TTFT > 0 {
+		meta += fmt.Sprintf("\n%s %s", labelStyle.Render("TTFT:"), formatDuration(m.selected.TTFT))
+	}
+	if m.selected.Duration > 0 {
+		meta += fmt.Sprintf("\n%s %s", labelStyle.Render("Total Latency:"), formatDuration(m.selected.Duration))
+	}
 	metaRendered := metaBox.Render(meta)
 	b.WriteString(metaRendered)
 	b.WriteString("\n\n")
