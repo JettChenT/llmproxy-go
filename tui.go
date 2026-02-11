@@ -608,6 +608,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+
+		case "J":
+			// Jump to next request in detail view
+			if m.showDetail {
+				m.jumpToAdjacentRequest(1)
+			}
+
+		case "K":
+			// Jump to previous request in detail view
+			if m.showDetail {
+				m.jumpToAdjacentRequest(-1)
+			}
 		}
 
 	case tea.MouseMsg:
@@ -862,6 +874,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, tea.Batch(cmds...)
+}
+
+// jumpToAdjacentRequest navigates to the next (direction=1) or previous (direction=-1) request in the detail view.
+func (m *model) jumpToAdjacentRequest(direction int) {
+	displayRequests := m.getDisplayRequests()
+	if len(displayRequests) == 0 {
+		return
+	}
+
+	// Find current request's index in the display list
+	currentIdx := -1
+	for i, req := range displayRequests {
+		if req.ID == m.selectedID {
+			currentIdx = i
+			break
+		}
+	}
+
+	newIdx := currentIdx + direction
+	if newIdx < 0 || newIdx >= len(displayRequests) {
+		return
+	}
+
+	m.cursor = newIdx
+	m.selected = displayRequests[newIdx]
+	m.selectedID = m.selected.ID
+	m.currentMsgIndex = 0
+	m.messagePositions = nil
+	m.collapsedMessages = make(map[int]bool)
+	m.viewport.SetContent(m.renderTabContent())
+	m.viewport.GotoTop()
 }
 
 func (m model) View() string {

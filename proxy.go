@@ -59,11 +59,19 @@ func (r *responseRecorder) Header() http.Header {
 	return r.ResponseWriter.Header()
 }
 
+// Flush implements http.Flusher so that SSE streaming works through the proxy.
+func (r *responseRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func isLLMEndpoint(path string) bool {
 	llmPaths := []string{
 		"/v1/chat/completions",
 		"/v1/completions",
 		"/v1/embeddings",
+		"/v1/messages",
 		"/chat/completions",
 		"/completions",
 	}
@@ -73,6 +81,11 @@ func isLLMEndpoint(path string) bool {
 		}
 	}
 	return false
+}
+
+// isAnthropicEndpoint returns true if the path is an Anthropic Messages API endpoint
+func isAnthropicEndpoint(path string) bool {
+	return strings.HasSuffix(path, "/v1/messages")
 }
 
 // shouldSkipCache checks if the request has headers indicating caching should be skipped.
@@ -145,11 +158,15 @@ func StartProxyInstance(name, listenAddr, targetURL string) error {
 		req.Host = target.Host
 	}
 
-	// Suppress error logging to prevent TUI layout issues when clients disconnect
+	// Handle proxy errors (upstream unreachable, DNS failure, etc.)
+	// Write a 502 status so the request is properly marked as failed in the TUI.
+	// Don't log to stderr as it disrupts the TUI layout.
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		// Silently handle proxy errors (e.g., client disconnection)
-		// The TUI will show the request as failed via the response status
+		w.WriteHeader(http.StatusBadGateway)
 	}
+
+	// Flush immediately for streaming responses (SSE)
+	proxy.FlushInterval = -1
 
 	// Modify response to capture and potentially decompress
 	proxy.ModifyResponse = func(resp *http.Response) error {
@@ -410,12 +427,30 @@ func extractTokenUsage(req *LLMRequest, responseBody []byte) {
 		return
 	}
 
-	// Try to parse as OpenAI-style response with usage field
+	// Check for SSE data (streaming response)
+	trimmed := strings.TrimSpace(string(responseBody))
+	if strings.HasPrefix(trimmed, "event:") || strings.HasPrefix(trimmed, "data:") {
+		extractTokenUsageFromSSE(req, responseBody)
+		if req.Model != "" && (req.InputTokens > 0 || req.OutputTokens > 0) {
+			cost := GetModelCost(req.ProviderID, req.Model)
+			if cost != nil {
+				req.Cost = CalculateCost(cost, req.InputTokens, req.OutputTokens)
+			}
+		}
+		if program != nil && (req.InputTokens > 0 || req.OutputTokens > 0) {
+			program.Send(requestUpdatedMsg{req: req})
+		}
+		return
+	}
+
+	// Try to parse response with usage field (supports both OpenAI and Anthropic formats)
 	var resp struct {
 		Usage struct {
 			PromptTokens     int `json:"prompt_tokens"`
 			CompletionTokens int `json:"completion_tokens"`
 			TotalTokens      int `json:"total_tokens"`
+			InputTokens      int `json:"input_tokens"`
+			OutputTokens     int `json:"output_tokens"`
 		} `json:"usage"`
 	}
 
@@ -423,9 +458,17 @@ func extractTokenUsage(req *LLMRequest, responseBody []byte) {
 		return
 	}
 
-	// Update token counts
+	// Update token counts (OpenAI format)
 	req.InputTokens = resp.Usage.PromptTokens
 	req.OutputTokens = resp.Usage.CompletionTokens
+
+	// Anthropic format fallback (input_tokens, output_tokens)
+	if req.InputTokens == 0 && resp.Usage.InputTokens > 0 {
+		req.InputTokens = resp.Usage.InputTokens
+	}
+	if req.OutputTokens == 0 && resp.Usage.OutputTokens > 0 {
+		req.OutputTokens = resp.Usage.OutputTokens
+	}
 
 	// Calculate cost if we have provider and model info
 	if req.Model != "" {
@@ -438,5 +481,63 @@ func extractTokenUsage(req *LLMRequest, responseBody []byte) {
 	// Notify TUI of the update (if tokens were extracted)
 	if program != nil && (req.InputTokens > 0 || req.OutputTokens > 0) {
 		program.Send(requestUpdatedMsg{req: req})
+	}
+}
+
+// extractTokenUsageFromSSE parses SSE events to extract token usage from streaming responses.
+// Handles both Anthropic SSE (message_start/message_delta events) and OpenAI SSE (usage in data chunks).
+func extractTokenUsageFromSSE(req *LLMRequest, data []byte) {
+	lines := strings.Split(string(data), "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data: ") && !strings.HasPrefix(line, "data:") {
+			continue
+		}
+
+		jsonData := strings.TrimPrefix(line, "data: ")
+		jsonData = strings.TrimPrefix(jsonData, "data:")
+		jsonData = strings.TrimSpace(jsonData)
+		if jsonData == "" || jsonData == "[DONE]" {
+			continue
+		}
+
+		var event struct {
+			Type    string `json:"type"`
+			Message struct {
+				Usage struct {
+					InputTokens  int `json:"input_tokens"`
+					OutputTokens int `json:"output_tokens"`
+				} `json:"usage"`
+			} `json:"message"`
+			Usage struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				InputTokens      int `json:"input_tokens"`
+				OutputTokens     int `json:"output_tokens"`
+			} `json:"usage"`
+		}
+
+		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
+			continue
+		}
+
+		// Anthropic message_start: input_tokens in message.usage
+		if event.Type == "message_start" && event.Message.Usage.InputTokens > 0 {
+			req.InputTokens = event.Message.Usage.InputTokens
+		}
+
+		// Anthropic message_delta: output_tokens in usage
+		if event.Type == "message_delta" && event.Usage.OutputTokens > 0 {
+			req.OutputTokens = event.Usage.OutputTokens
+		}
+
+		// OpenAI: usage in data chunks (last chunk with stream_options include_usage)
+		if event.Usage.PromptTokens > 0 {
+			req.InputTokens = event.Usage.PromptTokens
+		}
+		if event.Usage.CompletionTokens > 0 {
+			req.OutputTokens = event.Usage.CompletionTokens
+		}
 	}
 }

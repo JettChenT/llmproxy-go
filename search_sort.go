@@ -21,32 +21,46 @@ func (m *model) extractSearchableText(req *LLMRequest) string {
 
 	// Extract request messages
 	if len(req.RequestBody) > 0 {
-		var openAIReq OpenAIRequest
-		if err := json.Unmarshal(req.RequestBody, &openAIReq); err == nil {
-			for _, msg := range openAIReq.Messages {
-				sb.WriteString(msg.Role)
-				sb.WriteString(" ")
-				// Handle content which can be string or array
-				switch c := msg.Content.(type) {
-				case string:
-					sb.WriteString(c)
+		if isAnthropicEndpoint(req.Path) {
+			var anthropicReq AnthropicRequest
+			if err := json.Unmarshal(req.RequestBody, &anthropicReq); err == nil {
+				if anthropicReq.System != nil {
+					sb.WriteString(extractAnthropicTextContent(anthropicReq.System))
 					sb.WriteString(" ")
-				case []interface{}:
-					for _, part := range c {
-						if p, ok := part.(map[string]interface{}); ok {
-							if text, ok := p["text"].(string); ok {
-								sb.WriteString(text)
-								sb.WriteString(" ")
+				}
+				for _, msg := range anthropicReq.Messages {
+					sb.WriteString(msg.Role)
+					sb.WriteString(" ")
+					sb.WriteString(extractAnthropicTextContent(msg.Content))
+					sb.WriteString(" ")
+				}
+			}
+		} else {
+			var openAIReq OpenAIRequest
+			if err := json.Unmarshal(req.RequestBody, &openAIReq); err == nil {
+				for _, msg := range openAIReq.Messages {
+					sb.WriteString(msg.Role)
+					sb.WriteString(" ")
+					switch c := msg.Content.(type) {
+					case string:
+						sb.WriteString(c)
+						sb.WriteString(" ")
+					case []interface{}:
+						for _, part := range c {
+							if p, ok := part.(map[string]interface{}); ok {
+								if text, ok := p["text"].(string); ok {
+									sb.WriteString(text)
+									sb.WriteString(" ")
+								}
 							}
 						}
 					}
-				}
-				// Add tool call info
-				for _, tc := range msg.ToolCalls {
-					sb.WriteString(tc.Function.Name)
-					sb.WriteString(" ")
-					sb.WriteString(tc.Function.Arguments)
-					sb.WriteString(" ")
+					for _, tc := range msg.ToolCalls {
+						sb.WriteString(tc.Function.Name)
+						sb.WriteString(" ")
+						sb.WriteString(tc.Function.Arguments)
+						sb.WriteString(" ")
+					}
 				}
 			}
 		}
@@ -54,19 +68,37 @@ func (m *model) extractSearchableText(req *LLMRequest) string {
 
 	// Extract response messages
 	if len(req.ResponseBody) > 0 {
-		var openAIResp OpenAIResponse
-		if err := json.Unmarshal(req.ResponseBody, &openAIResp); err == nil {
-			for _, choice := range openAIResp.Choices {
-				switch c := choice.Message.Content.(type) {
-				case string:
-					sb.WriteString(c)
+		if isAnthropicEndpoint(req.Path) {
+			var anthropicResp AnthropicResponse
+			if err := json.Unmarshal(req.ResponseBody, &anthropicResp); err == nil {
+				for _, block := range anthropicResp.Content {
+					if block.Type == "text" {
+						sb.WriteString(block.Text)
+						sb.WriteString(" ")
+					} else if block.Type == "thinking" {
+					sb.WriteString(block.Thinking)
 					sb.WriteString(" ")
+				} else if block.Type == "tool_use" {
+						sb.WriteString(block.Name)
+						sb.WriteString(" ")
+					}
 				}
-				for _, tc := range choice.Message.ToolCalls {
-					sb.WriteString(tc.Function.Name)
-					sb.WriteString(" ")
-					sb.WriteString(tc.Function.Arguments)
-					sb.WriteString(" ")
+			}
+		} else {
+			var openAIResp OpenAIResponse
+			if err := json.Unmarshal(req.ResponseBody, &openAIResp); err == nil {
+				for _, choice := range openAIResp.Choices {
+					switch c := choice.Message.Content.(type) {
+					case string:
+						sb.WriteString(c)
+						sb.WriteString(" ")
+					}
+					for _, tc := range choice.Message.ToolCalls {
+						sb.WriteString(tc.Function.Name)
+						sb.WriteString(" ")
+						sb.WriteString(tc.Function.Arguments)
+						sb.WriteString(" ")
+					}
 				}
 			}
 		}

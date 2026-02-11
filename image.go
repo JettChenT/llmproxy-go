@@ -79,6 +79,37 @@ func getExtensionFromMimeType(mimeType string) string {
 	}
 }
 
+// extractAnthropicImageURL extracts image data from an Anthropic image content block.
+// Anthropic format: {"type": "image", "source": {"type": "base64", "media_type": "...", "data": "..."}}
+// or: {"type": "image", "source": {"type": "url", "url": "https://..."}}
+func extractAnthropicImageURL(block map[string]interface{}) (string, bool) {
+	source, ok := block["source"].(map[string]interface{})
+	if !ok {
+		return "", false
+	}
+
+	sourceType, _ := source["type"].(string)
+
+	switch sourceType {
+	case "base64":
+		mediaType, _ := source["media_type"].(string)
+		data, _ := source["data"].(string)
+		if data != "" {
+			if mediaType == "" {
+				mediaType = "image/png"
+			}
+			url := fmt.Sprintf("data:%s;base64,%s", mediaType, data)
+			return url, true
+		}
+	case "url":
+		if url, ok := source["url"].(string); ok {
+			return url, false
+		}
+	}
+
+	return "", false
+}
+
 // extractImageURL extracts the URL from an image_url content block.
 func extractImageURL(imageURLBlock map[string]interface{}) (string, bool) {
 	if urlObj, ok := imageURLBlock["image_url"].(map[string]interface{}); ok {
@@ -90,35 +121,75 @@ func extractImageURL(imageURLBlock map[string]interface{}) (string, bool) {
 	return "", false
 }
 
-// truncateBase64URL returns a shortened version of a base64 URL for display.
-func truncateBase64URL(url string) string {
-	if !strings.HasPrefix(url, "data:") {
-		return url
-	}
-	// Find the comma
-	commaIdx := strings.Index(url, ",")
-	if commaIdx == -1 {
-		return url
-	}
-	metadata := url[:commaIdx]
-	dataLen := len(url) - commaIdx - 1
-	return fmt.Sprintf("%s,[%d bytes base64]", metadata, dataLen)
-}
+// truncateLongBase64Strings scans JSON bytes for long base64 string values
+// and replaces them with truncated placeholders. This prevents TUI lag when
+// displaying raw request/response JSON containing embedded images.
+// Works with both data URLs (OpenAI format) and raw base64 strings (Anthropic format).
+func truncateLongBase64Strings(jsonBytes []byte) []byte {
+	const maxLen = 500
 
-// replaceBase64InJSON replaces base64 image data in JSON with placeholders.
-// This is used to prevent lag when displaying raw request/response.
-func replaceBase64InJSON(jsonBytes []byte, imageRefs []ImageRef) []byte {
-	result := string(jsonBytes)
+	var result []byte
+	i := 0
+	for i < len(jsonBytes) {
+		if jsonBytes[i] != '"' {
+			result = append(result, jsonBytes[i])
+			i++
+			continue
+		}
 
-	for _, img := range imageRefs {
-		if img.IsBase64 && len(img.URL) > 100 {
-			// Find and replace the base64 data
-			placeholder := fmt.Sprintf("[Image %d: %s]", img.Index, truncateBase64URL(img.URL))
-			result = strings.Replace(result, img.URL, placeholder, 1)
+		// Found opening quote
+		result = append(result, '"')
+		i++ // skip opening quote
+		stringStart := i
+
+		// Scan to end of string, handling escape sequences
+		for i < len(jsonBytes) {
+			if jsonBytes[i] == '\\' {
+				i += 2 // skip escape sequence
+			} else if jsonBytes[i] == '"' {
+				break
+			} else {
+				i++
+			}
+		}
+
+		stringContent := jsonBytes[stringStart:i]
+
+		if isBase64String(stringContent, maxLen) {
+			previewLen := min(80, len(stringContent))
+			result = append(result, stringContent[:previewLen]...)
+			msg := fmt.Sprintf("... [%d chars truncated]", len(stringContent)-previewLen)
+			result = append(result, []byte(msg)...)
+		} else {
+			result = append(result, stringContent...)
+		}
+
+		// Add closing quote
+		result = append(result, '"')
+		if i < len(jsonBytes) {
+			i++ // skip closing quote
 		}
 	}
+	return result
+}
 
-	return []byte(result)
+// isBase64String checks if a JSON string value is likely base64 data that should be truncated.
+func isBase64String(content []byte, maxLen int) bool {
+	if len(content) <= maxLen {
+		return false
+	}
+	// Data URLs (e.g., "data:image/png;base64,...") are always truncated when long
+	if len(content) > 5 && string(content[:5]) == "data:" {
+		return true
+	}
+	// Check if first 100 chars are all base64-safe characters (A-Za-z0-9+/=)
+	sampleLen := min(100, len(content))
+	for _, c := range content[:sampleLen] {
+		if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=') {
+			return false
+		}
+	}
+	return true
 }
 
 // cleanupTempImages removes any temp image files we created.

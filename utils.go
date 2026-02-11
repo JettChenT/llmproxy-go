@@ -204,6 +204,167 @@ func highlightJSON(s string) string {
 	return highlightJSONWithWidth(s, 0)
 }
 
+// highlightXMLWithWidth applies syntax highlighting and wraps to the given width
+func highlightXMLWithWidth(s string, width int) string {
+	// First sanitize the input
+	s = sanitizeForTerminal(s)
+
+	lexer := lexers.Get("xml")
+	if lexer == nil {
+		lexer = lexers.Fallback
+	}
+	lexer = chroma.Coalesce(lexer)
+
+	// Use dracula style which complements the cyberpunk dark theme
+	style := styles.Get("dracula")
+	if style == nil {
+		style = styles.Fallback
+	}
+
+	// Use terminal256 formatter for terminal output
+	formatter := formatters.Get("terminal256")
+	if formatter == nil {
+		formatter = formatters.Fallback
+	}
+
+	iterator, err := lexer.Tokenise(nil, s)
+	if err != nil {
+		return s
+	}
+
+	var buf strings.Builder
+	err = formatter.Format(&buf, style, iterator)
+	if err != nil {
+		return s
+	}
+
+	result := buf.String()
+
+	// Apply ANSI-aware word wrapping if width is specified
+	if width > 0 {
+		result = wordwrap.String(result, width)
+	}
+
+	return result
+}
+
+// formatXMLContent prettifies XML content with proper indentation
+func formatXMLContent(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || s[0] != '<' {
+		return s
+	}
+
+	var result strings.Builder
+	indent := 0
+	inTag := false
+	tagStart := 0
+	i := 0
+
+	for i < len(s) {
+		ch := s[i]
+
+		if ch == '<' {
+			// Write any text content before this tag
+			if !inTag && i > tagStart {
+				text := strings.TrimSpace(s[tagStart:i])
+				if text != "" {
+					result.WriteString(strings.Repeat("  ", indent))
+					result.WriteString(text)
+					result.WriteString("\n")
+				}
+			}
+			inTag = true
+			tagStart = i
+		}
+
+		if ch == '>' && inTag {
+			tag := s[tagStart : i+1]
+			inTag = false
+
+			// Determine tag type
+			isClosing := len(tag) > 1 && tag[1] == '/'
+			isSelfClosing := len(tag) > 1 && tag[len(tag)-2] == '/'
+			isComment := strings.HasPrefix(tag, "<!--")
+			isProcessing := strings.HasPrefix(tag, "<?")
+
+			if isClosing {
+				indent--
+				if indent < 0 {
+					indent = 0
+				}
+			}
+
+			result.WriteString(strings.Repeat("  ", indent))
+			result.WriteString(tag)
+			result.WriteString("\n")
+
+			if !isClosing && !isSelfClosing && !isComment && !isProcessing {
+				indent++
+			}
+
+			tagStart = i + 1
+		}
+
+		i++
+	}
+
+	// Write any remaining text
+	if tagStart < len(s) {
+		text := strings.TrimSpace(s[tagStart:])
+		if text != "" {
+			result.WriteString(strings.Repeat("  ", indent))
+			result.WriteString(text)
+		}
+	}
+
+	return strings.TrimSpace(result.String())
+}
+
+// containsXMLContent checks if the string appears to contain XML content
+func containsXMLContent(s string) bool {
+	s = strings.TrimSpace(s)
+	// Check for XML-like content: starts with < or contains common XML patterns
+	if len(s) == 0 {
+		return false
+	}
+	// Look for XML tags pattern
+	hasOpenTag := strings.Contains(s, "</") || strings.Contains(s, "/>")
+	hasAngleBrackets := strings.Contains(s, "<") && strings.Contains(s, ">")
+	return hasOpenTag && hasAngleBrackets
+}
+
+// renderContentSmart formats content intelligently based on type
+// If content contains XML, it highlights it; otherwise uses markdown
+func renderContentSmart(content string, width int) string {
+	if content == "" {
+		return ""
+	}
+
+	// Check if content has significant XML structure
+	if containsXMLContent(content) {
+		// Apply syntax highlighting to make XML tags visible
+		// Optionally prettify if content looks like raw XML (single line with multiple tags)
+		if shouldPrettifyXML(content) {
+			content = formatXMLContent(content)
+		}
+		return highlightXMLWithWidth(content, width)
+	}
+
+	// Default to markdown rendering
+	return renderMarkdown(content, width)
+}
+
+// shouldPrettifyXML checks if XML content would benefit from reformatting
+func shouldPrettifyXML(s string) bool {
+	s = strings.TrimSpace(s)
+	// Only prettify if it's mostly a single line with multiple tags
+	newlineCount := strings.Count(s, "\n")
+	tagCount := strings.Count(s, "</")
+	// If there are many closing tags but few newlines, it's likely compressed XML
+	return tagCount > 3 && newlineCount < tagCount/2
+}
+
 // highlightJSONWithWidth applies syntax highlighting and wraps to the given width
 func highlightJSONWithWidth(s string, width int) string {
 	// First sanitize the input

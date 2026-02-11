@@ -42,16 +42,38 @@ type Cache interface {
 // GenerateCacheKey creates a cache key from the request
 // It hashes the request body to create a unique identifier
 func GenerateCacheKey(path string, requestBody []byte) string {
-	// Parse request to extract only the relevant parts for caching
-	// We want to exclude things like timestamps but include model, messages, etc.
+	// Use Anthropic-specific normalization for /v1/messages endpoints
+	if isAnthropicEndpoint(path) {
+		var req AnthropicRequest
+		if err := json.Unmarshal(requestBody, &req); err != nil {
+			hash := sha256.Sum256(requestBody)
+			return path + ":" + hex.EncodeToString(hash[:])
+		}
+		normalized := struct {
+			Model     string             `json:"model"`
+			Messages  []AnthropicMessage `json:"messages"`
+			System    interface{}        `json:"system,omitempty"`
+			MaxTokens int                `json:"max_tokens"`
+			Stream    bool               `json:"stream"`
+		}{
+			Model:     req.Model,
+			Messages:  req.Messages,
+			System:    req.System,
+			MaxTokens: req.MaxTokens,
+			Stream:    req.Stream,
+		}
+		data, _ := json.Marshal(normalized)
+		hash := sha256.Sum256(data)
+		return path + ":" + hex.EncodeToString(hash[:])
+	}
+
+	// Default: OpenAI format normalization
 	var req OpenAIRequest
 	if err := json.Unmarshal(requestBody, &req); err != nil {
-		// If we can't parse, hash the raw body
 		hash := sha256.Sum256(requestBody)
 		return path + ":" + hex.EncodeToString(hash[:])
 	}
 
-	// Create a normalized version for hashing
 	normalized := struct {
 		Model       string          `json:"model"`
 		Messages    []OpenAIMessage `json:"messages"`

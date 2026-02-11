@@ -99,6 +99,47 @@ type OpenAIResponse struct {
 	Usage   OpenAIUsage    `json:"usage"`
 }
 
+// Anthropic content block types
+type AnthropicContentBlock struct {
+	Type      string      `json:"type"`
+	Text      string      `json:"text,omitempty"`
+	ID        string      `json:"id,omitempty"`        // for tool_use
+	Name      string      `json:"name,omitempty"`      // for tool_use
+	Input     interface{} `json:"input,omitempty"`      // for tool_use
+	Thinking  string      `json:"thinking,omitempty"`   // for thinking
+	Signature string      `json:"signature,omitempty"`  // for thinking
+}
+
+// Anthropic message types
+type AnthropicMessage struct {
+	Role    string      `json:"role"`
+	Content interface{} `json:"content"` // string or []AnthropicContentBlock
+}
+
+type AnthropicRequest struct {
+	Model       string             `json:"model"`
+	Messages    []AnthropicMessage `json:"messages"`
+	System      interface{}        `json:"system,omitempty"` // string or []content blocks
+	MaxTokens   int                `json:"max_tokens"`
+	Stream      bool               `json:"stream,omitempty"`
+	Temperature float64            `json:"temperature,omitempty"`
+}
+
+type AnthropicUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
+type AnthropicResponse struct {
+	ID         string                  `json:"id"`
+	Type       string                  `json:"type"`
+	Role       string                  `json:"role"`
+	Content    []AnthropicContentBlock `json:"content"`
+	Model      string                  `json:"model"`
+	StopReason string                  `json:"stop_reason"`
+	Usage      AnthropicUsage          `json:"usage"`
+}
+
 // Tab types for detail view
 type Tab int
 

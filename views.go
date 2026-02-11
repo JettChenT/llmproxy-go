@@ -13,6 +13,74 @@ import (
 	zone "github.com/lrstanley/bubblezone"
 )
 
+// extractAnthropicTextContent extracts text from Anthropic content (string or array of blocks)
+func extractAnthropicTextContent(content interface{}) string {
+	switch c := content.(type) {
+	case string:
+		return c
+	case []interface{}:
+		var parts []string
+		for _, block := range c {
+			if b, ok := block.(map[string]interface{}); ok {
+				if t, _ := b["type"].(string); t == "text" {
+					if text, ok := b["text"].(string); ok {
+						parts = append(parts, text)
+					}
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	return ""
+}
+
+// extractAnthropicToolUses extracts tool_use blocks as ToolCalls from Anthropic content
+func extractAnthropicToolUses(content interface{}) []ToolCall {
+	arr, ok := content.([]interface{})
+	if !ok {
+		return nil
+	}
+	var toolCalls []ToolCall
+	for _, block := range arr {
+		b, ok := block.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if t, _ := b["type"].(string); t == "tool_use" {
+			inputJSON, _ := json.Marshal(b["input"])
+			toolCalls = append(toolCalls, ToolCall{
+				ID:   fmt.Sprintf("%v", b["id"]),
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      fmt.Sprintf("%v", b["name"]),
+					Arguments: string(inputJSON),
+				},
+			})
+		}
+	}
+	return toolCalls
+}
+
+// extractAnthropicToolResultID extracts the first tool_use_id from tool_result blocks
+func extractAnthropicToolResultID(content interface{}) string {
+	arr, ok := content.([]interface{})
+	if !ok {
+		return ""
+	}
+	for _, block := range arr {
+		b, ok := block.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if t, _ := b["type"].(string); t == "tool_result" {
+			if id, ok := b["tool_use_id"].(string); ok {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
 func (m model) renderSaveDialog() string {
 	// Build the dialog content
 	title := lipgloss.NewStyle().
@@ -572,11 +640,11 @@ func (m model) renderDetailView() string {
 	// Footer - show context-sensitive help
 	var help string
 	if m.activeTab == TabMessages {
-		help = helpStyle.Render("1-4/tab • n/N msg • c/C collapse • click [Image] to open • g/G top/end • ↑/↓ scroll • esc back")
+		help = helpStyle.Render("1-4/tab • J/K req • n/N msg • c/C collapse • click [Image] • g/G top/end • ↑/↓ scroll • esc back")
 	} else if m.activeTab == TabOutput {
-		help = helpStyle.Render("1-4/tab • n/N msg • c copy • y copy both • g/G top/end • ↑/↓ scroll • esc back")
+		help = helpStyle.Render("1-4/tab • J/K req • n/N msg • c copy • y copy both • g/G top/end • ↑/↓ scroll • esc back")
 	} else {
-		help = helpStyle.Render("1-4/tab tabs • c copy • y copy both • g/G top/end • ↑/↓ scroll • M select • esc/q back")
+		help = helpStyle.Render("1-4/tab • J/K req • c copy • y copy both • g/G top/end • ↑/↓ scroll • M select • esc/q back")
 	}
 
 	// Mouse mode indicator for detail view
@@ -628,6 +696,10 @@ func (m *model) renderTabContent() string {
 func (m *model) renderMessagesTab() string {
 	if len(m.selected.RequestBody) == 0 {
 		return contentStyle.Render("No request body")
+	}
+
+	if isAnthropicEndpoint(m.selected.Path) {
+		return m.renderAnthropicMessagesTab()
 	}
 
 	var req OpenAIRequest
@@ -804,7 +876,7 @@ func (m *model) renderMessagesTab() string {
 				Padding(0, 2).
 				Width(contentWidth)
 
-			renderedContent := m.replaceImagePlaceholders(renderMarkdown(content, textWidth))
+			renderedContent := m.replaceImagePlaceholders(renderContentSmart(content, textWidth))
 			msgContent = fmt.Sprintf("%s\n\n%s", clickableHeader, renderedContent)
 
 			if msg.Name != "" {
@@ -864,6 +936,10 @@ func (m *model) renderOutputTab() string {
 			return pendingStyle.Render("⏳ Waiting for response...")
 		}
 		return contentStyle.Render("No response body")
+	}
+
+	if isAnthropicEndpoint(m.selected.Path) {
+		return m.renderAnthropicOutputTab()
 	}
 
 	var resp OpenAIResponse
@@ -1037,8 +1113,8 @@ func (m model) renderRawRequest() string {
 	// Content width accounting for viewport padding
 	contentWidth := m.width - 8
 
-	// Replace base64 image data with placeholders to prevent lag
-	bodyToRender := replaceBase64InJSON(m.selected.RequestBody, m.imageRefs)
+	// Replace long base64 strings with truncated placeholders to prevent lag
+	bodyToRender := truncateLongBase64Strings(m.selected.RequestBody)
 
 	var prettyJSON bytes.Buffer
 	if err := json.Indent(&prettyJSON, bodyToRender, "", "  "); err != nil {
@@ -1107,8 +1183,8 @@ func (m model) renderRawResponse() string {
 	// Content width accounting for viewport padding
 	contentWidth := m.width - 8
 
-	// Replace base64 image data with placeholders to prevent lag
-	bodyToRender := replaceBase64InJSON(m.selected.ResponseBody, m.imageRefs)
+	// Replace long base64 strings with truncated placeholders to prevent lag
+	bodyToRender := truncateLongBase64Strings(m.selected.ResponseBody)
 
 	var prettyJSON bytes.Buffer
 	if err := json.Indent(&prettyJSON, bodyToRender, "", "  "); err != nil {
@@ -1194,6 +1270,367 @@ func (m model) renderToolCalls(toolCalls []ToolCall, maxWidth int) string {
 			b.WriteString("\n")
 		}
 	}
+
+	return b.String()
+}
+
+func (m *model) renderAnthropicMessagesTab() string {
+	var req AnthropicRequest
+	if err := json.Unmarshal(m.selected.RequestBody, &req); err != nil {
+		return errorStyle.Render(fmt.Sprintf("Failed to parse request: %v", err))
+	}
+
+	var b strings.Builder
+	lineCount := 0
+	contentWidth := m.width - 10
+	textWidth := contentWidth - 6
+	m.imageRefs = nil
+
+	// Request metadata
+	metaBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(accentColor).
+		Padding(0, 2).
+		MarginBottom(1).
+		MaxWidth(contentWidth)
+
+	meta := fmt.Sprintf("%s %s\n%s %s\n%s %d\n%s %v",
+		labelStyle.Render("Model:"), req.Model,
+		labelStyle.Render("Endpoint:"), m.selected.Path,
+		labelStyle.Render("Max Tokens:"), req.MaxTokens,
+		labelStyle.Render("Stream:"), req.Stream,
+	)
+	metaRendered := metaBox.Render(meta)
+	b.WriteString(metaRendered)
+	b.WriteString("\n\n")
+	lineCount += strings.Count(metaRendered, "\n") + 2
+
+	b.WriteString(labelStyle.Render("═══ Messages ═══"))
+	b.WriteString("\n\n")
+	lineCount += 2
+
+	// Build display messages: system (optional) + conversation
+	type displayMsg struct {
+		role         string
+		content      string
+		toolCalls    []ToolCall
+		toolResultID string
+	}
+	var msgs []displayMsg
+	imageCounter := 0
+
+	if req.System != nil {
+		msgs = append(msgs, displayMsg{
+			role:    "system",
+			content: extractAnthropicTextContent(req.System),
+		})
+	}
+
+	for _, msg := range req.Messages {
+		toolCalls := extractAnthropicToolUses(msg.Content)
+		toolResultID := extractAnthropicToolResultID(msg.Content)
+
+		// Extract content with image handling
+		var content string
+		switch c := msg.Content.(type) {
+		case string:
+			content = c
+		case []interface{}:
+			var parts []string
+			for _, block := range c {
+				bl, ok := block.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				blockType, _ := bl["type"].(string)
+				switch blockType {
+				case "text":
+					if text, ok := bl["text"].(string); ok {
+						parts = append(parts, text)
+					}
+				case "thinking":
+					if thinking, ok := bl["thinking"].(string); ok {
+						parts = append(parts, "💭 "+thinking)
+					}
+				case "redacted_thinking":
+					parts = append(parts, "💭 [thinking redacted]")
+				case "image":
+					imageCounter++
+					if url, isBase64 := extractAnthropicImageURL(bl); url != "" {
+						m.imageRefs = append(m.imageRefs, ImageRef{
+							Index:    imageCounter,
+							URL:      url,
+							IsBase64: isBase64,
+						})
+					}
+					parts = append(parts, fmt.Sprintf("__IMAGE_PLACEHOLDER_%d__", imageCounter))
+				case "tool_result":
+					switch rc := bl["content"].(type) {
+					case string:
+						parts = append(parts, rc)
+					case []interface{}:
+						for _, rb := range rc {
+							if mp, ok := rb.(map[string]interface{}); ok {
+								if text, ok := mp["text"].(string); ok {
+									parts = append(parts, text)
+								}
+							}
+						}
+					}
+				}
+			}
+			content = strings.Join(parts, "\n")
+		}
+
+		msgs = append(msgs, displayMsg{
+			role:         msg.Role,
+			content:      content,
+			toolCalls:    toolCalls,
+			toolResultID: toolResultID,
+		})
+	}
+
+	m.messagePositions = make([]int, len(msgs))
+
+	for i, msg := range msgs {
+		m.messagePositions[i] = lineCount
+
+		roleColor := dimColor
+		roleIcon := "💬"
+		switch msg.role {
+		case "system":
+			roleColor = accentColor
+			roleIcon = "⚙️"
+		case "user":
+			roleColor = primaryColor
+			roleIcon = "👤"
+			if msg.toolResultID != "" {
+				roleColor = warningColor
+				roleIcon = "🔧"
+			}
+		case "assistant":
+			roleColor = successColor
+			roleIcon = "🤖"
+		}
+
+		collapseIcon := "▼"
+		if m.collapsedMessages[i] {
+			collapseIcon = "▶"
+		}
+		isCurrentMsg := i == m.currentMsgIndex
+		collapseStyle := lipgloss.NewStyle().Foreground(dimColor)
+		if isCurrentMsg {
+			collapseStyle = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+		}
+		collapseIndicator := collapseStyle.Render(collapseIcon)
+
+		roleStyled := lipgloss.NewStyle().
+			Foreground(roleColor).
+			Bold(true).
+			Render(fmt.Sprintf("%s %s", roleIcon, strings.ToUpper(msg.role)))
+
+		msgZoneID := fmt.Sprintf("msg-%d", i)
+		clickableHeader := zone.Mark(msgZoneID, collapseIndicator+" "+roleStyled)
+
+		content := sanitizeForTerminal(msg.content)
+		var msgContent string
+		var msgBox lipgloss.Style
+
+		if m.collapsedMessages[i] {
+			preview := content
+			// Replace image placeholders with simple text for preview
+			for _, img := range m.imageRefs {
+				placeholder := fmt.Sprintf("__IMAGE_PLACEHOLDER_%d__", img.Index)
+				preview = strings.Replace(preview, placeholder, fmt.Sprintf("[Image %d]", img.Index), 1)
+			}
+			if len(preview) > 60 {
+				preview = preview[:57] + "..."
+			}
+			preview = strings.ReplaceAll(preview, "\n", " ")
+			previewStyled := lipgloss.NewStyle().
+				Foreground(dimColor).
+				Italic(true).
+				Render(preview)
+			msgContent = fmt.Sprintf("%s  %s", clickableHeader, previewStyled)
+			msgBox = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(roleColor).
+				Padding(0, 2).
+				Width(contentWidth)
+		} else {
+			msgBox = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(roleColor).
+				Padding(0, 2).
+				Width(contentWidth)
+
+			renderedContent := m.replaceImagePlaceholders(renderContentSmart(content, textWidth))
+
+			if msg.toolResultID != "" {
+				toolCallLabel := lipgloss.NewStyle().
+					Foreground(warningColor).
+					Italic(true).
+					Render(fmt.Sprintf("Response to: %s", msg.toolResultID))
+				msgContent = fmt.Sprintf("%s\n%s\n\n%s", clickableHeader, toolCallLabel, renderedContent)
+			} else if len(msg.toolCalls) > 0 {
+				msgContent = clickableHeader + "\n\n"
+				if content != "" {
+					msgContent += renderedContent + "\n\n"
+				}
+				msgContent += m.renderToolCalls(msg.toolCalls, textWidth)
+			} else {
+				msgContent = fmt.Sprintf("%s\n\n%s", clickableHeader, renderedContent)
+			}
+		}
+
+		rendered := msgBox.Render(msgContent)
+		b.WriteString(rendered)
+		lineCount += strings.Count(rendered, "\n") + 1
+
+		if i < len(msgs)-1 {
+			b.WriteString("\n")
+			lineCount++
+		}
+	}
+
+	return b.String()
+}
+
+func (m *model) renderAnthropicOutputTab() string {
+	if len(m.selected.ResponseBody) == 0 {
+		if m.selected.Status == StatusPending {
+			return pendingStyle.Render("⏳ Waiting for response...")
+		}
+		return contentStyle.Render("No response body")
+	}
+
+	var resp AnthropicResponse
+	if err := json.Unmarshal(m.selected.ResponseBody, &resp); err != nil {
+		return renderJSONBody(m.selected.ResponseBody, "Response")
+	}
+
+	var b strings.Builder
+	lineCount := 0
+	contentWidth := m.width - 10
+	textWidth := contentWidth - 6
+
+	// Response metadata
+	metaBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(successColor).
+		Padding(0, 2).
+		MarginBottom(1).
+		MaxWidth(contentWidth)
+
+	meta := fmt.Sprintf("%s %s\n%s %s\n%s %d\n%s %d\n%s %s",
+		labelStyle.Render("ID:"), resp.ID,
+		labelStyle.Render("Model:"), resp.Model,
+		labelStyle.Render("Input Tokens:"), resp.Usage.InputTokens,
+		labelStyle.Render("Output Tokens:"), resp.Usage.OutputTokens,
+		labelStyle.Render("Stop Reason:"), resp.StopReason,
+	)
+	metaRendered := metaBox.Render(meta)
+	b.WriteString(metaRendered)
+	b.WriteString("\n\n")
+	lineCount += strings.Count(metaRendered, "\n") + 2
+
+	b.WriteString(labelStyle.Render("═══ Response ═══"))
+	b.WriteString("\n\n")
+	lineCount += 2
+
+	m.messagePositions = []int{lineCount}
+
+	// Collect text, thinking, and tool use blocks
+	var textParts []string
+	var thinkingParts []string
+	var toolUses []ToolCall
+	hasRedactedThinking := false
+	for _, block := range resp.Content {
+		switch block.Type {
+		case "text":
+			textParts = append(textParts, block.Text)
+		case "thinking":
+			if block.Thinking != "" {
+				thinkingParts = append(thinkingParts, block.Thinking)
+			}
+		case "redacted_thinking":
+			hasRedactedThinking = true
+		case "tool_use":
+			inputJSON, _ := json.Marshal(block.Input)
+			toolUses = append(toolUses, ToolCall{
+				ID:   block.ID,
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      block.Name,
+					Arguments: string(inputJSON),
+				},
+			})
+		}
+	}
+
+	roleStyled := lipgloss.NewStyle().
+		Foreground(successColor).
+		Bold(true).
+		Render("🤖 ASSISTANT")
+
+	borderCol := successColor
+	if resp.StopReason == "tool_use" {
+		borderCol = warningColor
+	}
+
+	finishInfo := lipgloss.NewStyle().
+		Foreground(dimColor).
+		Italic(true).
+		Render(fmt.Sprintf("Stop reason: %s", resp.StopReason))
+
+	msgBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderCol).
+		Padding(1, 2).
+		Width(contentWidth)
+
+	var msgContent string
+	msgContent = roleStyled + "\n\n"
+
+	// Render thinking blocks (if any)
+	if len(thinkingParts) > 0 {
+		thinkingLabel := lipgloss.NewStyle().
+			Foreground(dimColor).
+			Bold(true).
+			Render("💭 THINKING")
+		thinkingText := sanitizeForTerminal(strings.Join(thinkingParts, "\n"))
+		thinkingBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(dimColor).
+			Padding(0, 2).
+			Width(textWidth)
+		msgContent += thinkingBox.Render(thinkingLabel+"\n\n"+renderMarkdown(thinkingText, textWidth-6)) + "\n\n"
+	}
+	if hasRedactedThinking {
+		redactedLabel := lipgloss.NewStyle().
+			Foreground(dimColor).
+			Italic(true).
+			Render("💭 [thinking redacted]")
+		msgContent += redactedLabel + "\n\n"
+	}
+
+	fullText := sanitizeForTerminal(strings.Join(textParts, "\n"))
+
+	if len(toolUses) > 0 {
+		if fullText != "" {
+			msgContent += renderMarkdown(fullText, textWidth) + "\n\n"
+		}
+		msgContent += m.renderToolCalls(toolUses, textWidth)
+		msgContent += "\n\n" + finishInfo
+	} else {
+		if fullText != "" {
+			msgContent += renderMarkdown(fullText, textWidth) + "\n\n"
+		}
+		msgContent += finishInfo
+	}
+
+	rendered := msgBox.Render(msgContent)
+	b.WriteString(rendered)
 
 	return b.String()
 }
