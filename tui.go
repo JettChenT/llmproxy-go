@@ -65,6 +65,9 @@ type model struct {
 	saveMessage     string
 	saveMessageTime time.Time
 
+	// Cost breakdown panel
+	showCostBreakdown bool
+
 	// Message navigation in detail view
 	collapsedMessages map[int]bool // Track collapsed state per message index
 	messagePositions  []int        // Line positions of each message in viewport
@@ -492,7 +495,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "esc":
-			if m.showDetail {
+			if m.showCostBreakdown {
+				m.showCostBreakdown = false
+				return m, nil
+			} else if m.showDetail {
 				m.showDetail = false
 				m.selected = nil
 			} else if m.searchQuery != "" {
@@ -545,7 +551,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.viewport.GotoTop()
 			}
 
-	case "c":
+		case "c":
 			if m.showDetail {
 				switch m.activeTab {
 				case TabMessages:
@@ -558,6 +564,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case TabOutput, TabRawInput, TabRawOutput:
 					m.copyActiveTab()
 				}
+			} else {
+				// Toggle cost breakdown panel in list view
+				m.showCostBreakdown = !m.showCostBreakdown
+				return m, nil
 			}
 
 		case "C":
@@ -914,6 +924,10 @@ func (m model) View() string {
 
 	if m.showSaveDialog {
 		return m.renderSaveDialog()
+	}
+
+	if m.showCostBreakdown {
+		return m.renderCostBreakdownPanel()
 	}
 
 	if m.showDetail {

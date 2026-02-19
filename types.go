@@ -64,11 +64,12 @@ type ToolCall struct {
 
 // OpenAI message types
 type OpenAIMessage struct {
-	Role       string     `json:"role"`
-	Content    any        `json:"content"` // Can be string or array for vision
-	Name       string     `json:"name,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role             string     `json:"role"`
+	Content          any        `json:"content"` // Can be string or array for vision
+	Name             string     `json:"name,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
 }
 
 type OpenAIRequest struct {

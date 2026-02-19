@@ -27,13 +27,22 @@ type TapeCostBreakdown struct {
 	TotalRequests     int
 }
 
-// AnalyzeTapeCosts processes a tape and returns cost breakdown
-func AnalyzeTapeCosts(tape *Tape) *TapeCostBreakdown {
+// ProxyCostSummary holds aggregated cost data for a proxy
+type ProxyCostSummary struct {
+	Proxy        string
+	InputTokens  int
+	OutputTokens int
+	Cost         float64
+	RequestCount int
+}
+
+// AnalyzeRequestsCosts processes a slice of requests and returns cost breakdown
+func AnalyzeRequestsCosts(requests []*LLMRequest) *TapeCostBreakdown {
 	breakdown := &TapeCostBreakdown{
 		Models: make(map[string]*ModelCostSummary),
 	}
 
-	for _, req := range tape.Requests {
+	for _, req := range requests {
 		// Skip incomplete requests
 		if req.Status == StatusPending {
 			continue
@@ -63,6 +72,46 @@ func AnalyzeTapeCosts(tape *Tape) *TapeCostBreakdown {
 	}
 
 	return breakdown
+}
+
+// AnalyzeTapeCosts processes a tape and returns cost breakdown
+func AnalyzeTapeCosts(tape *Tape) *TapeCostBreakdown {
+	return AnalyzeRequestsCosts(tape.Requests)
+}
+
+// AnalyzeProxyCosts processes requests and returns cost breakdown by proxy
+func AnalyzeProxyCosts(requests []*LLMRequest) []*ProxyCostSummary {
+	proxyMap := make(map[string]*ProxyCostSummary)
+
+	for _, req := range requests {
+		if req.Status == StatusPending {
+			continue
+		}
+
+		proxy := req.ProxyName
+		if proxy == "" {
+			proxy = "default"
+		}
+
+		if _, exists := proxyMap[proxy]; !exists {
+			proxyMap[proxy] = &ProxyCostSummary{Proxy: proxy}
+		}
+
+		summary := proxyMap[proxy]
+		summary.InputTokens += req.InputTokens
+		summary.OutputTokens += req.OutputTokens
+		summary.Cost += req.Cost
+		summary.RequestCount++
+	}
+
+	var result []*ProxyCostSummary
+	for _, summary := range proxyMap {
+		result = append(result, summary)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Cost > result[j].Cost
+	})
+	return result
 }
 
 // formatWithCommas formats a number with thousand separators

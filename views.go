@@ -121,6 +121,171 @@ func (m model) renderSaveDialog() string {
 	)
 }
 
+func (m *model) renderCostBreakdownPanel() string {
+	displayRequests := m.getDisplayRequests()
+	breakdown := AnalyzeRequestsCosts(displayRequests)
+
+	// Title
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(primaryColor).
+		Render("Cost Breakdown")
+
+	var b strings.Builder
+
+	if breakdown.TotalRequests == 0 {
+		b.WriteString(title)
+		b.WriteString("\n\n")
+		b.WriteString(lipgloss.NewStyle().Foreground(dimColor).Render("No completed requests"))
+		b.WriteString("\n\n")
+		b.WriteString(lipgloss.NewStyle().Foreground(dimColor).Italic(true).Render("Esc to close"))
+
+		dialogBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(primaryColor).
+			Padding(1, 2).
+			Width(60).
+			Align(lipgloss.Center)
+
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialogBox.Render(b.String()))
+	}
+
+	b.WriteString(title)
+	b.WriteString("\n\n")
+
+	// By Model section
+	sectionStyle := lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+	b.WriteString(sectionStyle.Render("By Model"))
+	b.WriteString("\n")
+
+	headerStyle := lipgloss.NewStyle().Foreground(dimColor).Bold(true)
+	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#E2E8F0"))
+	costStyle := lipgloss.NewStyle().Foreground(successColor).Bold(true)
+
+	// Sort models by cost descending
+	var sortedModels []*ModelCostSummary
+	for _, summary := range breakdown.Models {
+		sortedModels = append(sortedModels, summary)
+	}
+	sort.Slice(sortedModels, func(i, j int) bool {
+		return sortedModels[i].Cost > sortedModels[j].Cost
+	})
+
+	// Calculate column widths dynamically
+	maxModelLen := 5 // minimum "MODEL"
+	for _, s := range sortedModels {
+		if len(s.Model) > maxModelLen {
+			maxModelLen = len(s.Model)
+		}
+	}
+	if maxModelLen > 30 {
+		maxModelLen = 30
+	}
+
+	// Header row
+	b.WriteString(headerStyle.Render(fmt.Sprintf("  %-*s %5s %10s %10s %10s",
+		maxModelLen, "MODEL", "REQS", "IN TOK", "OUT TOK", "COST")))
+	b.WriteString("\n")
+	b.WriteString(lipgloss.NewStyle().Foreground(borderColor).Render(
+		"  " + strings.Repeat("─", maxModelLen+5+10+10+10+4)))
+	b.WriteString("\n")
+
+	for _, s := range sortedModels {
+		modelName := s.Model
+		if len(modelName) > maxModelLen {
+			modelName = modelName[:maxModelLen-1] + "…"
+		}
+		line := fmt.Sprintf("  %-*s %5d %10s %10s ",
+			maxModelLen, modelName, s.RequestCount,
+			formatWithCommas(s.InputTokens), formatWithCommas(s.OutputTokens))
+		b.WriteString(valueStyle.Render(line))
+		b.WriteString(costStyle.Render(fmt.Sprintf("%10s", formatCost(s.Cost))))
+		b.WriteString("\n")
+	}
+
+	// By Proxy section (only in multi-proxy mode)
+	if m.isMultiProxy() {
+		proxyCosts := AnalyzeProxyCosts(displayRequests)
+		if len(proxyCosts) > 0 {
+			b.WriteString("\n")
+			b.WriteString(sectionStyle.Render("By Proxy"))
+			b.WriteString("\n")
+
+			maxProxyLen := 5
+			for _, s := range proxyCosts {
+				if len(s.Proxy) > maxProxyLen {
+					maxProxyLen = len(s.Proxy)
+				}
+			}
+			if maxProxyLen > 20 {
+				maxProxyLen = 20
+			}
+
+			b.WriteString(headerStyle.Render(fmt.Sprintf("  %-*s %5s %10s %10s %10s",
+				maxProxyLen, "PROXY", "REQS", "IN TOK", "OUT TOK", "COST")))
+			b.WriteString("\n")
+			b.WriteString(lipgloss.NewStyle().Foreground(borderColor).Render(
+				"  " + strings.Repeat("─", maxProxyLen+5+10+10+10+4)))
+			b.WriteString("\n")
+
+			for _, s := range proxyCosts {
+				proxyName := s.Proxy
+				if len(proxyName) > maxProxyLen {
+					proxyName = proxyName[:maxProxyLen-1] + "…"
+				}
+				line := fmt.Sprintf("  %-*s %5d %10s %10s ",
+					maxProxyLen, proxyName, s.RequestCount,
+					formatWithCommas(s.InputTokens), formatWithCommas(s.OutputTokens))
+				b.WriteString(valueStyle.Render(line))
+				b.WriteString(costStyle.Render(fmt.Sprintf("%10s", formatCost(s.Cost))))
+				b.WriteString("\n")
+			}
+		}
+	}
+
+	// Totals
+	b.WriteString("\n")
+	b.WriteString(lipgloss.NewStyle().Foreground(borderColor).Render(
+		"  " + strings.Repeat("━", 50)))
+	b.WriteString("\n")
+	totalLabelStyle := lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+	totalValueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#E2E8F0"))
+	totalCostStyle := lipgloss.NewStyle().Foreground(successColor).Bold(true)
+
+	b.WriteString(totalLabelStyle.Render("  Requests: "))
+	b.WriteString(totalValueStyle.Render(fmt.Sprintf("%d", breakdown.TotalRequests)))
+	b.WriteString(totalLabelStyle.Render("   Input: "))
+	b.WriteString(totalValueStyle.Render(formatWithCommas(breakdown.TotalInputTokens)))
+	b.WriteString(totalLabelStyle.Render("   Output: "))
+	b.WriteString(totalValueStyle.Render(formatWithCommas(breakdown.TotalOutputTokens)))
+	b.WriteString("\n")
+	b.WriteString(totalLabelStyle.Render("  Total Cost: "))
+	b.WriteString(totalCostStyle.Render(formatCost(breakdown.TotalCost)))
+	b.WriteString("\n\n")
+
+	// Hint
+	b.WriteString(lipgloss.NewStyle().Foreground(dimColor).Italic(true).Render("c/Esc to close"))
+
+	// Calculate dialog width based on content
+	dialogWidth := maxModelLen + 5 + 10 + 10 + 10 + 4 + 8 // columns + padding
+	if dialogWidth < 60 {
+		dialogWidth = 60
+	}
+	if dialogWidth > m.width-4 {
+		dialogWidth = m.width - 4
+	}
+
+	dialogBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(primaryColor).
+		Padding(1, 2).
+		Width(dialogWidth)
+
+	dialog := dialogBox.Render(b.String())
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog)
+}
+
 func (m *model) renderListView() string {
 	var b strings.Builder
 
@@ -268,7 +433,7 @@ func (m *model) renderListView() string {
 			mouseIndicator = lipgloss.NewStyle().Foreground(warningColor).Render(" [SELECT]")
 		}
 
-		help = helpStyle.Render("space play • / search • [/] step • -/+ speed • f follow • q quit") + playIndicator + followIndicator + mouseIndicator + " " + progressBar + timeDisplay
+		help = helpStyle.Render("space play • / search • c cost • [/] step • -/+ speed • f follow • q quit") + playIndicator + followIndicator + mouseIndicator + " " + progressBar + timeDisplay
 	} else {
 		// Live mode help
 		followIndicator := ""
@@ -284,7 +449,7 @@ func (m *model) renderListView() string {
 		if !m.mouseEnabled {
 			mouseIndicator = lipgloss.NewStyle().Foreground(warningColor).Render(" [SELECT]")
 		}
-		help = helpStyle.Render("↑/↓ nav • / search • enter select • g/G top/bot • f follow • s save • q quit") + followIndicator + numIndicator + mouseIndicator
+		help = helpStyle.Render("↑/↓ nav • / search • enter select • c cost • g/G top/bot • f follow • s save • q quit") + followIndicator + numIndicator + mouseIndicator
 	}
 
 	// Calculate total cost across display requests
@@ -895,10 +1060,26 @@ func (m *model) renderMessagesTab() string {
 				Width(contentWidth)
 
 			renderedContent := m.replaceImagePlaceholders(renderContentSmart(content, textWidth))
-			msgContent = fmt.Sprintf("%s\n\n%s", clickableHeader, renderedContent)
 
+			// Build reasoning block if present
+			reasoningBlock := ""
+			if msg.ReasoningContent != "" {
+				reasoningLabel := lipgloss.NewStyle().
+					Foreground(dimColor).
+					Bold(true).
+					Render("💭 THINKING")
+				reasoningText := sanitizeForTerminal(msg.ReasoningContent)
+				reasoningInnerBox := lipgloss.NewStyle().
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(dimColor).
+					Padding(0, 2).
+					Width(textWidth)
+				reasoningBlock = reasoningInnerBox.Render(reasoningLabel+"\n\n"+renderMarkdown(reasoningText, textWidth-6))
+			}
+
+			headerText := clickableHeader
 			if msg.Name != "" {
-				msgContent = fmt.Sprintf("%s (%s)\n\n%s", clickableHeader, msg.Name, renderedContent)
+				headerText = fmt.Sprintf("%s (%s)", clickableHeader, msg.Name)
 			}
 
 			// Handle tool call ID for tool response messages
@@ -907,16 +1088,24 @@ func (m *model) renderMessagesTab() string {
 					Foreground(warningColor).
 					Italic(true).
 					Render(fmt.Sprintf("Response to: %s", msg.ToolCallID))
-				msgContent = fmt.Sprintf("%s\n%s\n\n%s", clickableHeader, toolCallLabel, renderedContent)
-			}
-
-			// Handle tool calls in message
-			if len(msg.ToolCalls) > 0 {
-				msgContent = clickableHeader + "\n\n"
+				if reasoningBlock != "" {
+					msgContent = fmt.Sprintf("%s\n%s\n\n%s\n\n%s", headerText, toolCallLabel, reasoningBlock, renderedContent)
+				} else {
+					msgContent = fmt.Sprintf("%s\n%s\n\n%s", headerText, toolCallLabel, renderedContent)
+				}
+			} else if len(msg.ToolCalls) > 0 {
+				msgContent = headerText + "\n\n"
+				if reasoningBlock != "" {
+					msgContent += reasoningBlock + "\n\n"
+				}
 				if content != "" && content != "null" {
 					msgContent += renderedContent + "\n\n"
 				}
 				msgContent += m.renderToolCalls(msg.ToolCalls, textWidth)
+			} else if reasoningBlock != "" {
+				msgContent = fmt.Sprintf("%s\n\n%s\n\n%s", headerText, reasoningBlock, renderedContent)
+			} else {
+				msgContent = fmt.Sprintf("%s\n\n%s", headerText, renderedContent)
 			}
 		}
 
