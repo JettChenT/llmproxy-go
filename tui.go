@@ -72,6 +72,7 @@ type model struct {
 	collapsedMessages map[int]bool // Track collapsed state per message index
 	messagePositions  []int        // Line positions of each message in viewport
 	currentMsgIndex   int          // Currently focused message index
+	toolsCollapsed    bool         // Whether the tools definition section is collapsed
 
 	// Mouse mode
 	mouseEnabled bool // True when mouse capture is enabled (default true)
@@ -101,6 +102,7 @@ func initialModel(listenAddr, targetURL string, saveTapeFile string) model {
 		tapeSpeed:         1,
 		saveTapeFile:      saveTapeFile,
 		collapsedMessages: make(map[int]bool),
+		toolsCollapsed:    true,
 		sortField:         SortByID,
 		sortDirection:     SortAsc,
 		searchIndexCache:  make(map[int]string),
@@ -120,6 +122,7 @@ func initialTapeModel(tape *Tape) model {
 		listenAddr:        tape.Session.ListenAddr,
 		targetURL:         tape.Session.TargetURL,
 		collapsedMessages: make(map[int]bool),
+		toolsCollapsed:    true,
 		sortField:         SortByID,
 		sortDirection:     SortAsc,
 		searchIndexCache:  make(map[int]string),
@@ -490,6 +493,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.currentMsgIndex = 0
 				m.messagePositions = nil
 				m.collapsedMessages = make(map[int]bool)
+				m.toolsCollapsed = true
 				m.viewport.SetContent(m.renderTabContent())
 				m.viewport.GotoTop()
 			}
@@ -579,6 +583,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					// Check if any are expanded - if so, collapse all; otherwise expand all
 					anyExpanded := false
+					if !m.toolsCollapsed {
+						anyExpanded = true
+					}
 					for i := 0; i < len(m.messagePositions); i++ {
 						if !m.collapsedMessages[i] {
 							anyExpanded = true
@@ -588,6 +595,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					for i := 0; i < len(m.messagePositions); i++ {
 						m.collapsedMessages[i] = anyExpanded
 					}
+					m.toolsCollapsed = anyExpanded
 					m.viewport.SetContent(m.renderTabContent())
 				}
 			}
@@ -660,6 +668,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.viewport.SetContent(m.renderTabContent())
 							break
 						}
+					}
+
+					// Handle click on tools definition header
+					if zone.Get("tools-def").InBounds(msg) {
+						m.toolsCollapsed = !m.toolsCollapsed
+						m.viewport.SetContent(m.renderTabContent())
 					}
 
 					// Handle clicks on image placeholders
@@ -913,6 +927,7 @@ func (m *model) jumpToAdjacentRequest(direction int) {
 	m.currentMsgIndex = 0
 	m.messagePositions = nil
 	m.collapsedMessages = make(map[int]bool)
+	m.toolsCollapsed = true
 	m.viewport.SetContent(m.renderTabContent())
 	m.viewport.GotoTop()
 }

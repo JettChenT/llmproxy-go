@@ -920,6 +920,14 @@ func (m *model) renderMessagesTab() string {
 	b.WriteString("\n\n")
 	lineCount += strings.Count(metaRendered, "\n") + 2
 
+	// Tool definitions (if present in request)
+	tools := extractToolDefinitions(m.selected.RequestBody)
+	if len(tools) > 0 {
+		toolsRendered, toolsLines := m.renderToolDefinitions(tools, contentWidth, contentWidth-6)
+		b.WriteString(toolsRendered)
+		lineCount += toolsLines
+	}
+
 	b.WriteString(labelStyle.Render("═══ Messages ═══"))
 	b.WriteString("\n\n")
 	lineCount += 2
@@ -1518,6 +1526,14 @@ func (m *model) renderAnthropicMessagesTab() string {
 	b.WriteString("\n\n")
 	lineCount += strings.Count(metaRendered, "\n") + 2
 
+	// Tool definitions (if present in request)
+	tools := extractToolDefinitions(m.selected.RequestBody)
+	if len(tools) > 0 {
+		toolsRendered, toolsLines := m.renderToolDefinitions(tools, contentWidth, textWidth)
+		b.WriteString(toolsRendered)
+		lineCount += toolsLines
+	}
+
 	b.WriteString(labelStyle.Render("═══ Messages ═══"))
 	b.WriteString("\n\n")
 	lineCount += 2
@@ -1868,6 +1884,157 @@ func (m *model) renderAnthropicOutputTab() string {
 	b.WriteString(rendered)
 
 	return b.String()
+}
+
+// extractToolDefinitions extracts tool definitions from a request body JSON.
+// Returns the raw tool maps, or nil if no tools found.
+func extractToolDefinitions(body []byte) []map[string]interface{} {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil
+	}
+	tools, ok := raw["tools"].([]interface{})
+	if !ok || len(tools) == 0 {
+		return nil
+	}
+	var result []map[string]interface{}
+	for _, t := range tools {
+		if tool, ok := t.(map[string]interface{}); ok {
+			result = append(result, tool)
+		}
+	}
+	return result
+}
+
+// getToolNameAndDesc extracts name and description from a tool definition map,
+// handling both OpenAI format (function.name) and Anthropic format (name).
+func getToolNameAndDesc(tool map[string]interface{}) (name, description string, schema interface{}) {
+	// OpenAI format: tools[].function.{name, description, parameters}
+	if fn, ok := tool["function"].(map[string]interface{}); ok {
+		name, _ = fn["name"].(string)
+		description, _ = fn["description"].(string)
+		schema = fn["parameters"]
+	}
+	// Anthropic format: tools[].{name, description, input_schema}
+	if name == "" {
+		name, _ = tool["name"].(string)
+		description, _ = tool["description"].(string)
+		schema = tool["input_schema"]
+	}
+	return
+}
+
+// renderToolDefinitions renders a collapsible tools section showing tool definitions.
+// Returns the rendered string and the number of lines it occupies.
+func (m *model) renderToolDefinitions(tools []map[string]interface{}, contentWidth, textWidth int) (string, int) {
+	if len(tools) == 0 {
+		return "", 0
+	}
+
+	var b strings.Builder
+	lineCount := 0
+
+	// Collect tool names for collapsed preview
+	var toolNames []string
+	for _, tool := range tools {
+		name, _, _ := getToolNameAndDesc(tool)
+		if name != "" {
+			toolNames = append(toolNames, name)
+		}
+	}
+
+	// Header
+	collapseIcon := "▼"
+	if m.toolsCollapsed {
+		collapseIcon = "▶"
+	}
+	collapseIndicator := lipgloss.NewStyle().Foreground(dimColor).Render(collapseIcon)
+
+	toolHeader := lipgloss.NewStyle().
+		Foreground(warningColor).
+		Bold(true).
+		Render(fmt.Sprintf("🛠 TOOLS (%d)", len(tools)))
+
+	clickableHeader := zone.Mark("tools-def", collapseIndicator+" "+toolHeader)
+
+	toolBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(warningColor).
+		Padding(0, 2).
+		Width(contentWidth)
+
+	if m.toolsCollapsed {
+		// Collapsed: show header with tool names preview
+		preview := strings.Join(toolNames, ", ")
+		if len(preview) > 60 {
+			preview = preview[:57] + "..."
+		}
+		previewStyled := lipgloss.NewStyle().
+			Foreground(dimColor).
+			Italic(true).
+			Render(preview)
+		content := fmt.Sprintf("%s  %s", clickableHeader, previewStyled)
+		rendered := toolBox.Render(content)
+		b.WriteString(rendered)
+		b.WriteString("\n\n")
+		lineCount += strings.Count(rendered, "\n") + 2
+	} else {
+		// Expanded: show each tool with description and schema
+		var content strings.Builder
+		content.WriteString(clickableHeader)
+		content.WriteString("\n")
+
+		for i, tool := range tools {
+			name, desc, schema := getToolNameAndDesc(tool)
+
+			nameStyled := lipgloss.NewStyle().
+				Foreground(primaryColor).
+				Bold(true).
+				Render(fmt.Sprintf("▸ %s", name))
+			content.WriteString("\n")
+			content.WriteString(nameStyled)
+			content.WriteString("\n")
+
+			if desc != "" {
+				// Truncate long descriptions
+				if len(desc) > 200 {
+					desc = desc[:197] + "..."
+				}
+				descStyled := lipgloss.NewStyle().
+					Foreground(dimColor).
+					Italic(true).
+					Width(textWidth).
+					Render(desc)
+				content.WriteString(descStyled)
+				content.WriteString("\n")
+			}
+
+			if schema != nil {
+				schemaJSON, err := json.MarshalIndent(schema, "    ", "  ")
+				if err == nil {
+					schemaLabel := lipgloss.NewStyle().
+						Foreground(accentColor).
+						Render("  Parameters:")
+					content.WriteString(schemaLabel)
+					content.WriteString("\n    ")
+					content.WriteString(highlightJSON(string(schemaJSON)))
+					content.WriteString("\n")
+				}
+			}
+
+			if i < len(tools)-1 {
+				content.WriteString(lipgloss.NewStyle().Foreground(borderColor).Render("  ─────────────────────────"))
+				content.WriteString("\n")
+			}
+		}
+
+		rendered := toolBox.Render(content.String())
+		b.WriteString(rendered)
+		b.WriteString("\n\n")
+		lineCount += strings.Count(rendered, "\n") + 2
+	}
+
+	return b.String(), lineCount
 }
 
 // truncateID shortens long tool call IDs for display
