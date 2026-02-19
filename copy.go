@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/atotto/clipboard"
@@ -40,21 +43,70 @@ func (m *model) copyInputOutput() {
 		return
 	}
 
+	var b strings.Builder
+
+	// Request section: method, URL, headers, body
+	b.WriteString("Input:\n")
+	b.WriteString(fmt.Sprintf("%s %s HTTP/1.1\n", m.selected.Method, m.selected.Path))
+	if m.selected.Host != "" {
+		b.WriteString(fmt.Sprintf("Host: %s\n", m.selected.Host))
+	}
+	if len(m.selected.RequestHeaders) > 0 {
+		headerKeys := make([]string, 0, len(m.selected.RequestHeaders))
+		for k := range m.selected.RequestHeaders {
+			if k == "Host" {
+				continue
+			}
+			headerKeys = append(headerKeys, k)
+		}
+		sort.Strings(headerKeys)
+		for _, k := range headerKeys {
+			values := m.selected.RequestHeaders[k]
+			headerValue := strings.Join(values, ", ")
+			if strings.ToLower(k) == "authorization" && len(headerValue) > 30 {
+				headerValue = headerValue[:20] + "..." + headerValue[len(headerValue)-10:]
+			}
+			b.WriteString(fmt.Sprintf("%s: %s\n", k, headerValue))
+		}
+	}
+	b.WriteString("\n")
+
 	inputText, _, inputErr := rawBodyCopyText(m.selected.RequestBody, "input")
-	outputText, _, outputErr := outputCopyText(m.selected)
 	if inputErr != nil {
 		m.copyMessage = fmt.Sprintf("✗ %s", inputErr.Error())
 		m.copyMessageTime = time.Now()
 		return
 	}
+	b.WriteString(inputText)
+
+	// Response section: status, headers, body
+	b.WriteString("\n\nOutput:\n")
+	if m.selected.StatusCode > 0 {
+		statusText := http.StatusText(m.selected.StatusCode)
+		b.WriteString(fmt.Sprintf("HTTP/1.1 %d %s\n", m.selected.StatusCode, statusText))
+	}
+	if len(m.selected.ResponseHeaders) > 0 {
+		headerKeys := make([]string, 0, len(m.selected.ResponseHeaders))
+		for k := range m.selected.ResponseHeaders {
+			headerKeys = append(headerKeys, k)
+		}
+		sort.Strings(headerKeys)
+		for _, k := range headerKeys {
+			values := m.selected.ResponseHeaders[k]
+			b.WriteString(fmt.Sprintf("%s: %s\n", k, strings.Join(values, ", ")))
+		}
+	}
+	b.WriteString("\n")
+
+	outputText, _, outputErr := outputCopyText(m.selected)
 	if outputErr != nil {
 		m.copyMessage = fmt.Sprintf("✗ %s", outputErr.Error())
 		m.copyMessageTime = time.Now()
 		return
 	}
+	b.WriteString(outputText)
 
-	combined := fmt.Sprintf("Input:\n%s\n\nOutput:\n%s", inputText, outputText)
-	if err := clipboard.WriteAll(combined); err != nil {
+	if err := clipboard.WriteAll(b.String()); err != nil {
 		m.copyMessage = fmt.Sprintf("✗ Clipboard error: %v", err)
 		m.copyMessageTime = time.Now()
 		return
