@@ -8,6 +8,7 @@ A lightweight debugging proxy for LLM API requests with a beautiful terminal UI.
 - 💰 **Cost Tracking** - Automatic token usage and cost calculation for popular models
 - 💾 **Smart Caching** - Memory and persistent caching with configurable TTL
 - 📼 **Session Recording** - Record sessions to "tape files" and replay them later
+- 🆔 **Session IDs + Inspect CLI** - Copy a live session ID and inspect recent requests from the command line
 - 🔎 **Search & Filter** - Quickly find requests with fuzzy search
 - 📊 **Sortable Views** - Sort by duration, tokens, cost, status, and more
 - 🎯 **Provider Detection** - Automatic detection of OpenAI, Anthropic, and other providers
@@ -79,6 +80,7 @@ llmproxy-go [flags]              # Start the proxy server
 llmproxy-go --config config.toml # Start with config file (supports multiple proxies)
 llmproxy-go --gen-config         # Print example configuration to stdout
 llmproxy-go cost <tape-file>     # Print cost breakdown for a tape file
+llmproxy-go inspect --session ID # Inspect recent requests for a live session
 ```
 
 ### Command-Line Flags
@@ -123,6 +125,16 @@ llmproxy-go --tape debug-session.tape
 **Analyze costs from a recorded session:**
 ```bash
 llmproxy-go cost debug-session.tape
+```
+
+**Inspect recent requests from a live session:**
+```bash
+llmproxy-go inspect --session sess-abc123def456 --limit 20
+```
+
+**Inspect a single request in detail (JSON):**
+```bash
+llmproxy-go inspect --session sess-abc123def456 --request 42 --json
 ```
 
 **Proxy Anthropic API:**
@@ -230,6 +242,7 @@ export ANTHROPIC_BASE_URL=http://localhost:8081
 | `/` | Search/filter requests |
 | `f` | Toggle follow mode (auto-scroll to latest) |
 | `s` | Save current session to tape file |
+| `Y` | Copy current live session ID |
 | `q` | Quit |
 
 **Sortable columns** (click header or use mouse):

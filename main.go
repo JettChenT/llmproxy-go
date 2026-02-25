@@ -23,6 +23,10 @@ var (
 	cacheTTL             time.Duration
 	cacheSimulateLatency bool
 	cacheDir             string
+	inspectSessionID     string
+	inspectLimit         int
+	inspectRequestID     int
+	inspectJSON          bool
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -102,6 +106,26 @@ var genConfigCmd = &cobra.Command{
 	},
 }
 
+// inspectCmd represents the inspect command
+var inspectCmd = &cobra.Command{
+	Use:   "inspect --session <session-id>",
+	Short: "Inspect recent requests for a live session",
+	Long: `Inspect recent LLM requests captured by a running llmproxy session.
+Use --request to inspect one request in detail, or --json for machine-readable output.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		opts := InspectOptions{
+			SessionID: inspectSessionID,
+			Limit:     inspectLimit,
+			RequestID: inspectRequestID,
+			JSON:      inspectJSON,
+		}
+		if err := RunInspectCommand(os.Stdout, opts); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	},
+}
+
 func init() {
 	// Root command flags
 	rootCmd.Flags().StringVarP(&configFile, "config", "c", "", "Path to TOML config file for multi-proxy configuration")
@@ -113,10 +137,18 @@ func init() {
 	rootCmd.Flags().BoolVar(&cacheSimulateLatency, "cache-simulate-latency", false, "Simulate original response latency for cached responses")
 	rootCmd.Flags().StringVar(&cacheDir, "cache-dir", "", "Directory for badger cache (default: ~/.llmproxy-cache)")
 
+	// Inspect command flags
+	inspectCmd.Flags().StringVar(&inspectSessionID, "session", "", "Session ID to inspect")
+	inspectCmd.Flags().IntVar(&inspectLimit, "limit", 20, "Number of most recent requests to show (0 = all)")
+	inspectCmd.Flags().IntVar(&inspectRequestID, "request", 0, "Inspect one request ID in detail")
+	inspectCmd.Flags().BoolVar(&inspectJSON, "json", false, "Print JSON output")
+	_ = inspectCmd.MarkFlagRequired("session")
+
 	// Add subcommands
 	rootCmd.AddCommand(replayCmd)
 	rootCmd.AddCommand(costCmd)
 	rootCmd.AddCommand(genConfigCmd)
+	rootCmd.AddCommand(inspectCmd)
 }
 
 func main() {
@@ -149,6 +181,21 @@ func runWithConfig(configPath string) {
 	}
 	defer CloseCache()
 
+	// Build display strings for TUI and session history metadata
+	listenAddrs := formatListenAddrs(config.Proxies)
+	targetURLs := formatTargetURLs(config.Proxies)
+
+	sessionListen := listenAddrs
+	if listenAddrs == "multi" {
+		sessionListen = formatProxySummary(config.Proxies)
+	}
+	sessionID, err := StartSessionHistory(sessionListen, targetURLs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating session history: %v\n", err)
+		os.Exit(1)
+	}
+	defer StopSessionHistory()
+
 	// Initialize tape writer if specified in config
 	saveTapeFile := config.SaveTape
 	if saveTapeFile != "" {
@@ -174,16 +221,12 @@ func runWithConfig(configPath string) {
 		os.Exit(1)
 	}
 
-	// Build display strings for TUI
-	listenAddrs := formatListenAddrs(config.Proxies)
-	targetURLs := formatTargetURLs(config.Proxies)
-
 	// Suppress log output during TUI operation to prevent layout issues
 	log.SetOutput(io.Discard)
 
 	// Start the TUI
 	program = tea.NewProgram(
-		initialModel(listenAddrs, targetURLs, saveTapeFile),
+		initialModel(listenAddrs, targetURLs, saveTapeFile, sessionID),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
@@ -218,6 +261,13 @@ func runSingleProxy() {
 	// Format listen address from port
 	listenAddr := fmt.Sprintf(":%d", port)
 
+	sessionID, err := StartSessionHistory(listenAddr, targetURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating session history: %v\n", err)
+		os.Exit(1)
+	}
+	defer StopSessionHistory()
+
 	// Initialize tape writer if save-tape is specified
 	if saveTape != "" {
 		writer, err := NewTapeWriter(saveTape)
@@ -242,7 +292,7 @@ func runSingleProxy() {
 
 	// Start the TUI
 	program = tea.NewProgram(
-		initialModel(listenAddr, targetURL, saveTape),
+		initialModel(listenAddr, targetURL, saveTape, sessionID),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)

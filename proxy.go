@@ -279,6 +279,7 @@ func createProxyHandler(proxyName, listenAddr string, target *url.URL, proxy *ht
 		}
 		requests = append(requests, req)
 		requestsMu.Unlock()
+		RecordSessionRequest(req)
 
 		// Notify TUI
 		if program != nil {
@@ -321,6 +322,8 @@ func createProxyHandler(proxyName, listenAddr string, target *url.URL, proxy *ht
 					// Extract token usage from response (non-blocking)
 					go extractTokenUsage(req, responseBody)
 				}
+
+				RecordSessionRequest(req)
 
 				// Write to tape if recording
 				if tapeWriter != nil {
@@ -446,6 +449,7 @@ func extractTokenUsage(req *LLMRequest, responseBody []byte) {
 				req.Cost = CalculateCost(cost, req.InputTokens, req.OutputTokens)
 			}
 		}
+		RecordSessionRequest(req)
 		if program != nil && (req.InputTokens > 0 || req.OutputTokens > 0) {
 			program.Send(requestUpdatedMsg{req: req})
 		}
@@ -486,6 +490,7 @@ func extractTokenUsage(req *LLMRequest, responseBody []byte) {
 			req.Cost = CalculateCost(cost, req.InputTokens, req.OutputTokens)
 		}
 	}
+	RecordSessionRequest(req)
 
 	// Notify TUI of the update (if tokens were extracted)
 	if program != nil && (req.InputTokens > 0 || req.OutputTokens > 0) {

@@ -116,6 +116,21 @@ func (m *model) copyInputOutput() {
 	m.copyMessageTime = time.Now()
 }
 
+func (m *model) copySessionID() {
+	if m.sessionID == "" {
+		m.copyMessage = "✗ No session ID available"
+		m.copyMessageTime = time.Now()
+		return
+	}
+	if err := clipboard.WriteAll(m.sessionID); err != nil {
+		m.copyMessage = fmt.Sprintf("✗ Clipboard error: %v", err)
+		m.copyMessageTime = time.Now()
+		return
+	}
+	m.copyMessage = fmt.Sprintf("Copied session ID %s", m.sessionID)
+	m.copyMessageTime = time.Now()
+}
+
 func (m *model) getCopyText() (string, string, error) {
 	switch m.activeTab {
 	case TabOutput:

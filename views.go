@@ -292,6 +292,7 @@ func (m *model) renderListView() string {
 	// Header
 	var header string
 	var proxyInfo string
+	var sessionInfo string
 
 	if m.tapeMode {
 		header = titleStyle.Render("📼 LLM Proxy - Tape Playback")
@@ -311,7 +312,15 @@ func (m *model) renderListView() string {
 		header = titleStyle.Render("⚡ LLM Proxy 🔴 REC")
 	}
 
-	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Center, header, "  ", proxyInfo))
+	if !m.tapeMode && m.sessionID != "" {
+		sessionInfo = statusBarStyle.Render(fmt.Sprintf("session %s", m.sessionID))
+	}
+
+	headerParts := []string{header, "  ", proxyInfo}
+	if sessionInfo != "" {
+		headerParts = append(headerParts, "  ", sessionInfo)
+	}
+	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Center, headerParts...))
 	b.WriteString("\n")
 
 	// Search bar
@@ -387,6 +396,14 @@ func (m *model) renderListView() string {
 		b.WriteString(msgStyle.Render(m.saveMessage))
 		return b.String()
 	}
+	if m.copyMessage != "" {
+		msgStyle := lipgloss.NewStyle().Foreground(successColor)
+		if strings.HasPrefix(m.copyMessage, "✗") {
+			msgStyle = lipgloss.NewStyle().Foreground(errorColor)
+		}
+		b.WriteString(msgStyle.Render(m.copyMessage))
+		return b.String()
+	}
 
 	// Build help text based on mode
 	var help string
@@ -449,7 +466,7 @@ func (m *model) renderListView() string {
 		if !m.mouseEnabled {
 			mouseIndicator = lipgloss.NewStyle().Foreground(warningColor).Render(" [SELECT]")
 		}
-		help = helpStyle.Render("↑/↓ nav • / search • enter select • c cost • g/G top/bot • f follow • s save • q quit") + followIndicator + numIndicator + mouseIndicator
+		help = helpStyle.Render("↑/↓ nav • / search • enter select • c cost • g/G top/bot • f follow • s save • Y copy-session • q quit") + followIndicator + numIndicator + mouseIndicator
 	}
 
 	// Calculate total cost across display requests
@@ -1082,7 +1099,7 @@ func (m *model) renderMessagesTab() string {
 					BorderForeground(dimColor).
 					Padding(0, 2).
 					Width(textWidth)
-				reasoningBlock = reasoningInnerBox.Render(reasoningLabel+"\n\n"+renderMarkdown(reasoningText, textWidth-6))
+				reasoningBlock = reasoningInnerBox.Render(reasoningLabel + "\n\n" + renderMarkdown(reasoningText, textWidth-6))
 			}
 
 			headerText := clickableHeader
