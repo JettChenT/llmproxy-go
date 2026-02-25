@@ -132,10 +132,26 @@ llmproxy-go cost debug-session.tape
 llmproxy-go inspect --session sess-abc123def456 --limit 20
 ```
 
+**Search/filter inspect results:**
+```bash
+llmproxy-go inspect --session sess-abc123def456 \
+  --model gpt-4o --status complete --path /chat/completions --search "hello"
+```
+
 **Inspect a single request in detail (JSON):**
 ```bash
 llmproxy-go inspect --session sess-abc123def456 --request 42 --json
 ```
+
+### Inspect Command Filters
+
+`inspect` supports:
+- `--search` full-text query across model/path/url/request body/response body
+- `--model` case-insensitive substring filter
+- `--path` case-insensitive path filter
+- `--status` filter (`pending`, `complete`, `error`)
+- `--code` exact HTTP status code filter
+- `--limit` keep only the most recent N matched requests (`0` = all)
 
 **Proxy Anthropic API:**
 ```bash

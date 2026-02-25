@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -15,6 +16,11 @@ type InspectOptions struct {
 	Limit     int
 	RequestID int
 	JSON      bool
+	Search    string
+	Model     string
+	Path      string
+	Status    string
+	Code      int
 }
 
 // RunInspectCommand prints recent request history for a session.
@@ -42,28 +48,37 @@ func RunInspectCommand(out io.Writer, opts InspectOptions) error {
 		return nil
 	}
 
-	recent := snapshot.RecentRequests(opts.Limit)
+	filtered, err := filterSessionRequests(snapshot.Requests, opts)
+	if err != nil {
+		return err
+	}
+	recent := limitRecentRequests(filtered, opts.Limit)
+	filters := filterMap(opts)
 	if opts.JSON {
 		payload := struct {
-			SessionID     string                  `json:"session_id"`
-			ListenAddr    string                  `json:"listen_addr"`
-			TargetURL     string                  `json:"target_url"`
-			PID           int                     `json:"pid"`
-			StartedAt     time.Time               `json:"started_at"`
-			UpdatedAt     time.Time               `json:"updated_at"`
-			TotalRequests int                     `json:"total_requests"`
-			ShownRequests int                     `json:"shown_requests"`
-			Requests      []SessionHistoryRequest `json:"requests"`
+			SessionID       string                  `json:"session_id"`
+			ListenAddr      string                  `json:"listen_addr"`
+			TargetURL       string                  `json:"target_url"`
+			PID             int                     `json:"pid"`
+			StartedAt       time.Time               `json:"started_at"`
+			UpdatedAt       time.Time               `json:"updated_at"`
+			TotalRequests   int                     `json:"total_requests"`
+			MatchedRequests int                     `json:"matched_requests"`
+			ShownRequests   int                     `json:"shown_requests"`
+			Filters         map[string]string       `json:"filters,omitempty"`
+			Requests        []SessionHistoryRequest `json:"requests"`
 		}{
-			SessionID:     snapshot.SessionID,
-			ListenAddr:    snapshot.ListenAddr,
-			TargetURL:     snapshot.TargetURL,
-			PID:           snapshot.PID,
-			StartedAt:     snapshot.StartedAt,
-			UpdatedAt:     snapshot.UpdatedAt,
-			TotalRequests: snapshot.RequestCount,
-			ShownRequests: len(recent),
-			Requests:      recent,
+			SessionID:       snapshot.SessionID,
+			ListenAddr:      snapshot.ListenAddr,
+			TargetURL:       snapshot.TargetURL,
+			PID:             snapshot.PID,
+			StartedAt:       snapshot.StartedAt,
+			UpdatedAt:       snapshot.UpdatedAt,
+			TotalRequests:   snapshot.RequestCount,
+			MatchedRequests: len(filtered),
+			ShownRequests:   len(recent),
+			Filters:         filters,
+			Requests:        recent,
 		}
 
 		enc := json.NewEncoder(out)
@@ -71,11 +86,17 @@ func RunInspectCommand(out io.Writer, opts InspectOptions) error {
 		return enc.Encode(payload)
 	}
 
-	renderSummaryTable(out, snapshot, recent)
+	renderSummaryTable(out, snapshot, recent, len(filtered), filters)
 	return nil
 }
 
-func renderSummaryTable(out io.Writer, snapshot *SessionHistorySnapshot, requests []SessionHistoryRequest) {
+func renderSummaryTable(
+	out io.Writer,
+	snapshot *SessionHistorySnapshot,
+	requests []SessionHistoryRequest,
+	matchedCount int,
+	filters map[string]string,
+) {
 	age := time.Since(snapshot.UpdatedAt).Round(time.Second)
 	if age < 0 {
 		age = 0
@@ -84,7 +105,16 @@ func renderSummaryTable(out io.Writer, snapshot *SessionHistorySnapshot, request
 	fmt.Fprintf(out, "Proxy:   %s -> %s\n", snapshot.ListenAddr, snapshot.TargetURL)
 	fmt.Fprintf(out, "PID:     %d\n", snapshot.PID)
 	fmt.Fprintf(out, "Updated: %s ago\n", age)
-	fmt.Fprintf(out, "Showing %d of %d request(s)\n\n", len(requests), snapshot.RequestCount)
+	if len(filters) > 0 {
+		fmt.Fprintf(out, "Filters: %s\n", formatFilterMap(filters))
+	}
+	fmt.Fprintf(
+		out,
+		"Showing %d of %d matched request(s) (total %d)\n\n",
+		len(requests),
+		matchedCount,
+		snapshot.RequestCount,
+	)
 
 	if len(requests) == 0 {
 		fmt.Fprintln(out, "(no requests yet)")
@@ -204,4 +234,129 @@ func renderRequestDetail(out io.Writer, snapshot *SessionHistorySnapshot, req Se
 	if req.ResponseBodyTruncated {
 		fmt.Fprintln(out, "\n(note: response body truncated in session history)")
 	}
+}
+
+func filterSessionRequests(requests []SessionHistoryRequest, opts InspectOptions) ([]SessionHistoryRequest, error) {
+	search := strings.TrimSpace(opts.Search)
+	model := strings.TrimSpace(opts.Model)
+	path := strings.TrimSpace(opts.Path)
+	code := opts.Code
+
+	statusFilter, hasStatusFilter, err := parseStatusFilter(opts.Status)
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]SessionHistoryRequest, 0, len(requests))
+	for _, req := range requests {
+		if model != "" && !containsFold(req.Model, model) {
+			continue
+		}
+		if path != "" && !containsFold(req.Path, path) {
+			continue
+		}
+		if hasStatusFilter && req.Status != statusFilter {
+			continue
+		}
+		if code > 0 && req.StatusCode != code {
+			continue
+		}
+		if search != "" && !containsFold(requestSearchText(req), search) {
+			continue
+		}
+		filtered = append(filtered, req)
+	}
+
+	return filtered, nil
+}
+
+func limitRecentRequests(requests []SessionHistoryRequest, limit int) []SessionHistoryRequest {
+	if limit <= 0 || limit >= len(requests) {
+		out := make([]SessionHistoryRequest, len(requests))
+		copy(out, requests)
+		return out
+	}
+
+	start := len(requests) - limit
+	out := make([]SessionHistoryRequest, limit)
+	copy(out, requests[start:])
+	return out
+}
+
+func parseStatusFilter(raw string) (RequestStatus, bool, error) {
+	status := strings.TrimSpace(strings.ToLower(raw))
+	if status == "" {
+		return StatusPending, false, nil
+	}
+
+	switch status {
+	case "pending":
+		return StatusPending, true, nil
+	case "complete", "completed", "done":
+		return StatusComplete, true, nil
+	case "error", "failed":
+		return StatusError, true, nil
+	default:
+		return StatusPending, false, fmt.Errorf("invalid status %q (expected pending|complete|error)", raw)
+	}
+}
+
+func requestSearchText(req SessionHistoryRequest) string {
+	return strings.Join(
+		[]string{
+			req.Method,
+			req.Path,
+			req.URL,
+			req.Model,
+			req.StatusText,
+			strconv.Itoa(req.StatusCode),
+			req.ProxyName,
+			req.ProxyListen,
+			req.ProviderID,
+			req.RequestBody,
+			req.ResponseBody,
+		},
+		"\n",
+	)
+}
+
+func containsFold(haystack, needle string) bool {
+	return strings.Contains(strings.ToLower(haystack), strings.ToLower(needle))
+}
+
+func filterMap(opts InspectOptions) map[string]string {
+	filters := map[string]string{}
+	if model := strings.TrimSpace(opts.Model); model != "" {
+		filters["model"] = model
+	}
+	if path := strings.TrimSpace(opts.Path); path != "" {
+		filters["path"] = path
+	}
+	if status := strings.TrimSpace(opts.Status); status != "" {
+		filters["status"] = strings.ToLower(status)
+	}
+	if opts.Code > 0 {
+		filters["code"] = strconv.Itoa(opts.Code)
+	}
+	if search := strings.TrimSpace(opts.Search); search != "" {
+		filters["search"] = search
+	}
+	return filters
+}
+
+func formatFilterMap(filters map[string]string) string {
+	if len(filters) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(filters))
+	for k := range filters {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%q", k, filters[k]))
+	}
+	return strings.Join(parts, ", ")
 }

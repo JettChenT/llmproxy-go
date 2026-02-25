@@ -174,3 +174,105 @@ func TestRunInspectCommand(t *testing.T) {
 		t.Fatalf("detail output missing response body: %s", detail)
 	}
 }
+
+func TestRunInspectCommand_Filters(t *testing.T) {
+	t.Setenv(sessionHistoryDirEnv, t.TempDir())
+
+	history, err := NewSessionHistory("sess-filters", ":8080", "https://api.openai.com")
+	if err != nil {
+		t.Fatalf("NewSessionHistory error: %v", err)
+	}
+
+	history.UpsertRequest(&LLMRequest{
+		ID:          1,
+		Method:      "POST",
+		Path:        "/v1/chat/completions",
+		Model:       "gpt-4o-mini",
+		Status:      StatusComplete,
+		StatusCode:  200,
+		StartTime:   time.Now().Add(-2 * time.Second),
+		RequestBody: []byte(`{"messages":[{"role":"user","content":"alpha hello"}]}`),
+	})
+	history.UpsertRequest(&LLMRequest{
+		ID:          2,
+		Method:      "POST",
+		Path:        "/v1/messages",
+		Model:       "claude-3-5-sonnet",
+		Status:      StatusError,
+		StatusCode:  429,
+		StartTime:   time.Now().Add(-time.Second),
+		RequestBody: []byte(`{"messages":[{"role":"user","content":"beta"}]}`),
+	})
+	history.UpsertRequest(&LLMRequest{
+		ID:           3,
+		Method:       "POST",
+		Path:         "/v1/chat/completions",
+		Model:        "gpt-4o",
+		Status:       StatusComplete,
+		StatusCode:   200,
+		StartTime:    time.Now(),
+		RequestBody:  []byte(`{"messages":[{"role":"user","content":"gamma"}]}`),
+		ResponseBody: []byte(`{"choices":[{"message":{"content":"hello gamma"}}]}`),
+	})
+
+	var out bytes.Buffer
+	err = RunInspectCommand(&out, InspectOptions{
+		SessionID: "sess-filters",
+		JSON:      true,
+		Model:     "gpt",
+		Path:      "/chat/completions",
+		Status:    "complete",
+		Code:      200,
+		Search:    "gamma",
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("RunInspectCommand filter error: %v", err)
+	}
+
+	var payload struct {
+		MatchedRequests int                     `json:"matched_requests"`
+		ShownRequests   int                     `json:"shown_requests"`
+		Requests        []SessionHistoryRequest `json:"requests"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal inspect output: %v", err)
+	}
+
+	if payload.MatchedRequests != 1 || payload.ShownRequests != 1 {
+		t.Fatalf("expected 1 matched/shown request, got matched=%d shown=%d", payload.MatchedRequests, payload.ShownRequests)
+	}
+	if len(payload.Requests) != 1 || payload.Requests[0].ID != 3 {
+		t.Fatalf("expected only request #3 after filters, got %+v", payload.Requests)
+	}
+}
+
+func TestRunInspectCommand_FilterInvalidStatus(t *testing.T) {
+	t.Setenv(sessionHistoryDirEnv, t.TempDir())
+
+	history, err := NewSessionHistory("sess-invalid-status", ":8080", "https://api.openai.com")
+	if err != nil {
+		t.Fatalf("NewSessionHistory error: %v", err)
+	}
+	history.UpsertRequest(&LLMRequest{
+		ID:         1,
+		Method:     "POST",
+		Path:       "/v1/chat/completions",
+		Model:      "gpt-4o",
+		Status:     StatusComplete,
+		StatusCode: 200,
+		StartTime:  time.Now(),
+	})
+
+	var out bytes.Buffer
+	err = RunInspectCommand(&out, InspectOptions{
+		SessionID: "sess-invalid-status",
+		Status:    "wat",
+	})
+	if err == nil {
+		t.Fatal("expected invalid status filter to return an error")
+	}
+	if !strings.Contains(err.Error(), "invalid status") {
+		t.Fatalf("expected invalid status error, got %v", err)
+	}
+}

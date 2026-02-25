@@ -27,6 +27,11 @@ var (
 	inspectLimit         int
 	inspectRequestID     int
 	inspectJSON          bool
+	inspectSearch        string
+	inspectModel         string
+	inspectPath          string
+	inspectStatus        string
+	inspectCode          int
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -111,13 +116,18 @@ var inspectCmd = &cobra.Command{
 	Use:   "inspect --session <session-id>",
 	Short: "Inspect recent requests for a live session",
 	Long: `Inspect recent LLM requests captured by a running llmproxy session.
-Use --request to inspect one request in detail, or --json for machine-readable output.`,
+Supports search/filtering by model/path/status/code, request detail by ID, and JSON output.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		opts := InspectOptions{
 			SessionID: inspectSessionID,
 			Limit:     inspectLimit,
 			RequestID: inspectRequestID,
 			JSON:      inspectJSON,
+			Search:    inspectSearch,
+			Model:     inspectModel,
+			Path:      inspectPath,
+			Status:    inspectStatus,
+			Code:      inspectCode,
 		}
 		if err := RunInspectCommand(os.Stdout, opts); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -142,6 +152,11 @@ func init() {
 	inspectCmd.Flags().IntVar(&inspectLimit, "limit", 20, "Number of most recent requests to show (0 = all)")
 	inspectCmd.Flags().IntVar(&inspectRequestID, "request", 0, "Inspect one request ID in detail")
 	inspectCmd.Flags().BoolVar(&inspectJSON, "json", false, "Print JSON output")
+	inspectCmd.Flags().StringVar(&inspectSearch, "search", "", "Full-text search across model/path/body/response")
+	inspectCmd.Flags().StringVar(&inspectModel, "model", "", "Filter by model substring (case-insensitive)")
+	inspectCmd.Flags().StringVar(&inspectPath, "path", "", "Filter by path substring (case-insensitive)")
+	inspectCmd.Flags().StringVar(&inspectStatus, "status", "", "Filter by status: pending, complete, error")
+	inspectCmd.Flags().IntVar(&inspectCode, "code", 0, "Filter by exact HTTP status code")
 	_ = inspectCmd.MarkFlagRequired("session")
 
 	// Add subcommands

@@ -26,3 +26,7 @@ Then send requests to `http://localhost:8080/api/v1/chat/completions`.
 - The `go.mod` requires **Go 1.25.2**. The environment already has this version installed.
 - The proxy target URL should be the API host root (e.g. `https://openrouter.ai`), not a sub-path like `https://openrouter.ai/api`, because the proxy appends the request path to the target.
 - The `cost` subcommand and `replay` subcommand are non-TUI and can run without a TTY.
+
+## Agent Skills
+
+- `skills/llmproxy-inspect-cli/SKILL.md` — use this skill when you need to inspect/filter recent live requests by session ID from the CLI.
