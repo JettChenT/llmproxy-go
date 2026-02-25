@@ -482,25 +482,64 @@ func (m *model) renderListView() string {
 }
 
 // isMultiProxy returns true if running in multi-proxy mode
-func (m *model) isMultiProxy() bool {
+func (m model) isMultiProxy() bool {
 	return m.listenAddr == "multi"
+}
+
+const (
+	listColID       = 6
+	listColStatus   = 12
+	listColProxy    = 12
+	listColModel    = 24
+	listColCode     = 6
+	listColSize     = 10
+	listColDuration = 12
+	listColInTok    = 10
+	listColOutTok   = 10
+	listColCost     = 10
+)
+
+type listColumns struct {
+	id       int
+	status   int
+	proxy    int
+	model    int
+	code     int
+	size     int
+	duration int
+	inTok    int
+	outTok   int
+	cost     int
+	preview  int
+}
+
+func (m model) listViewColumns() listColumns {
+	cols := listColumns{
+		id:       listColID,
+		status:   listColStatus,
+		proxy:    listColProxy,
+		model:    listColModel,
+		code:     listColCode,
+		size:     listColSize,
+		duration: listColDuration,
+		inTok:    listColInTok,
+		outTok:   listColOutTok,
+		cost:     listColCost,
+	}
+
+	// Base row width includes all fixed columns + spaces between columns.
+	baseRowWidth := cols.id + cols.status + cols.model + cols.code + cols.size +
+		cols.duration + cols.inTok + cols.outTok + cols.cost + 8
+	if m.isMultiProxy() {
+		baseRowWidth += cols.proxy + 1
+	}
+	cols.preview = m.listPreviewColumnWidth(baseRowWidth)
+	return cols
 }
 
 // renderSortableHeaders renders clickable column headers with sort indicators
 func (m *model) renderSortableHeaders() string {
-	// Column widths (must match renderRequestRow)
-	const (
-		colID       = 6
-		colStatus   = 12
-		colProxy    = 12
-		colModel    = 24
-		colCode     = 6
-		colSize     = 10
-		colDuration = 12
-		colInTok    = 10
-		colOutTok   = 10
-		colCost     = 10
-	)
+	cols := m.listViewColumns()
 
 	// Helper to render a header with sort indicator
 	renderHeader := func(label string, width int, field SortField, zoneID string) string {
@@ -518,8 +557,11 @@ func (m *model) renderSortableHeaders() string {
 
 		// Truncate label if needed to fit indicator
 		maxLabelLen := width - 2
-		if len(label) > maxLabelLen {
-			label = label[:maxLabelLen]
+		if maxLabelLen < 1 {
+			maxLabelLen = 1
+		}
+		if len([]rune(label)) > maxLabelLen {
+			label = truncateForColumn(label, maxLabelLen)
 		}
 
 		content := fmt.Sprintf("%-*s%s", width-1, label, indicator)
@@ -527,23 +569,32 @@ func (m *model) renderSortableHeaders() string {
 	}
 
 	headers := []string{
-		renderHeader("#", colID, SortByID, "sort-id"),
-		renderHeader("STATUS", colStatus, SortByStatus, "sort-status"),
-		renderHeader("MODEL", colModel, SortByModel, "sort-model"),
+		renderHeader("#", cols.id, SortByID, "sort-id"),
+		renderHeader("STATUS", cols.status, SortByStatus, "sort-status"),
+		renderHeader("MODEL", cols.model, SortByModel, "sort-model"),
 	}
 
 	// Add PROXY column only in multi-proxy mode (after MODEL)
 	if m.isMultiProxy() {
-		headers = append(headers, renderHeader("PROXY", colProxy, SortByNone, "sort-proxy"))
+		headers = append(headers, renderHeader("PROXY", cols.proxy, SortByNone, "sort-proxy"))
+	}
+
+	// Add request preview snippet column if there is enough width.
+	if cols.preview > 0 {
+		previewHeader := lipgloss.NewStyle().
+			Foreground(dimColor).
+			Bold(true).
+			Render(fmt.Sprintf("%-*s", cols.preview, "PREVIEW"))
+		headers = append(headers, previewHeader)
 	}
 
 	headers = append(headers,
-		renderHeader("CODE", colCode, SortByCode, "sort-code"),
-		renderHeader("SIZE", colSize, SortBySize, "sort-size"),
-		renderHeader("DURATION", colDuration, SortByDuration, "sort-duration"),
-		renderHeader("IN TOK", colInTok, SortByInputTokens, "sort-intok"),
-		renderHeader("OUT TOK", colOutTok, SortByOutputTokens, "sort-outtok"),
-		renderHeader("COST", colCost, SortByCost, "sort-cost"),
+		renderHeader("CODE", cols.code, SortByCode, "sort-code"),
+		renderHeader("SIZE", cols.size, SortBySize, "sort-size"),
+		renderHeader("DURATION", cols.duration, SortByDuration, "sort-duration"),
+		renderHeader("IN TOK", cols.inTok, SortByInputTokens, "sort-intok"),
+		renderHeader("OUT TOK", cols.outTok, SortByOutputTokens, "sort-outtok"),
+		renderHeader("COST", cols.cost, SortByCost, "sort-cost"),
 	)
 
 	row := lipgloss.NewStyle().Padding(0, 1).Render(strings.Join(headers, " "))
@@ -582,23 +633,11 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%d:%02d:00", hours, mins)
 }
 
-func (m model) renderRequestRow(req *LLMRequest, selected bool) string {
-	// Column widths (must match renderSortableHeaders)
-	const (
-		colID       = 6
-		colStatus   = 12
-		colProxy    = 12
-		colModel    = 24
-		colCode     = 6
-		colSize     = 10
-		colDuration = 12
-		colInTok    = 10
-		colOutTok   = 10
-		colCost     = 10
-	)
+func (m *model) renderRequestRow(req *LLMRequest, selected bool) string {
+	cols := m.listViewColumns()
 
 	// ID column
-	idStr := fmt.Sprintf("%-*d", colID, req.ID)
+	idStr := fmt.Sprintf("%-*d", cols.id, req.ID)
 
 	// Status column - pad first, then style
 	var statusText string
@@ -619,7 +658,7 @@ func (m model) renderRequestRow(req *LLMRequest, selected bool) string {
 		statusText = "✗  ERROR"
 		statusStyle = errorStyle
 	}
-	statusStr := statusStyle.Render(fmt.Sprintf("%-*s", colStatus, statusText))
+	statusStr := statusStyle.Render(fmt.Sprintf("%-*s", cols.status, statusText))
 
 	// Proxy column (only in multi-proxy mode)
 	var proxyStr string
@@ -628,18 +667,27 @@ func (m model) renderRequestRow(req *LLMRequest, selected bool) string {
 		if proxyName == "" {
 			proxyName = "-"
 		}
-		if len(proxyName) > colProxy-2 {
-			proxyName = proxyName[:colProxy-3] + "…"
-		}
-		proxyStr = lipgloss.NewStyle().Foreground(accentColor).Render(fmt.Sprintf("%-*s", colProxy, proxyName))
+		proxyName = truncateForColumn(proxyName, cols.proxy)
+		proxyStr = lipgloss.NewStyle().Foreground(accentColor).Render(fmt.Sprintf("%-*s", cols.proxy, proxyName))
 	}
 
 	// Model column
-	modelName := req.Model
-	if len(modelName) > colModel-2 {
-		modelName = modelName[:colModel-3] + "…"
+	modelName := truncateForColumn(req.Model, cols.model)
+	modelStr := modelBadgeStyle.Render(fmt.Sprintf("%-*s", cols.model, modelName))
+
+	// Preview column (system prompt or first message snippet)
+	var previewStr string
+	if cols.preview > 0 {
+		preview := m.getRequestPreviewSnippet(req)
+		if preview == "" {
+			preview = "-"
+		}
+		preview = truncateForColumn(preview, cols.preview)
+		previewStr = lipgloss.NewStyle().
+			Foreground(dimColor).
+			Italic(true).
+			Render(fmt.Sprintf("%-*s", cols.preview, preview))
 	}
-	modelStr := modelBadgeStyle.Render(fmt.Sprintf("%-*s", colModel, modelName))
 
 	// Code column - pad first, then style
 	var codeText string
@@ -657,14 +705,14 @@ func (m model) renderRequestRow(req *LLMRequest, selected bool) string {
 		codeText = "-"
 		codeStyle = lipgloss.NewStyle().Foreground(dimColor)
 	}
-	codeStr := codeStyle.Render(fmt.Sprintf("%-*s", colCode, codeText))
+	codeStr := codeStyle.Render(fmt.Sprintf("%-*s", cols.code, codeText))
 
 	// Size column (no styling needed)
 	sizeText := "-"
 	if req.ResponseSize > 0 {
 		sizeText = formatBytes(req.ResponseSize)
 	}
-	sizeStr := fmt.Sprintf("%-*s", colSize, sizeText)
+	sizeStr := fmt.Sprintf("%-*s", cols.size, sizeText)
 
 	// Duration column - show TTFT/total for streaming, total only for non-streaming
 	durationText := "-"
@@ -675,7 +723,7 @@ func (m model) renderRequestRow(req *LLMRequest, selected bool) string {
 			durationText = formatDuration(req.Duration)
 		}
 	}
-	durationStr := fmt.Sprintf("%-*s", colDuration, durationText)
+	durationStr := fmt.Sprintf("%-*s", cols.duration, durationText)
 
 	// Input tokens column - show actual if available, otherwise estimated with ~
 	var inTokText string
@@ -686,7 +734,7 @@ func (m model) renderRequestRow(req *LLMRequest, selected bool) string {
 	} else {
 		inTokText = "-"
 	}
-	inTokStr := fmt.Sprintf("%-*s", colInTok, inTokText)
+	inTokStr := fmt.Sprintf("%-*s", cols.inTok, inTokText)
 
 	// Output tokens column
 	var outTokText string
@@ -695,7 +743,7 @@ func (m model) renderRequestRow(req *LLMRequest, selected bool) string {
 	} else {
 		outTokText = "-"
 	}
-	outTokStr := fmt.Sprintf("%-*s", colOutTok, outTokText)
+	outTokStr := fmt.Sprintf("%-*s", cols.outTok, outTokText)
 
 	// Cost column
 	var costText string
@@ -704,36 +752,37 @@ func (m model) renderRequestRow(req *LLMRequest, selected bool) string {
 	} else {
 		costText = "-"
 	}
-	costStr := fmt.Sprintf("%-*s", colCost, costText)
+	costStr := fmt.Sprintf("%-*s", cols.cost, costText)
 
 	// Build row with simple spacing
 	var row string
 	if m.isMultiProxy() {
-		row = fmt.Sprintf("%s %s %s %s %s %s %s %s %s %s",
+		row = fmt.Sprintf("%s %s %s %s",
 			idStr,
 			statusStr,
 			modelStr,
 			proxyStr,
-			codeStr,
-			sizeStr,
-			durationStr,
-			inTokStr,
-			outTokStr,
-			costStr,
 		)
 	} else {
-		row = fmt.Sprintf("%s %s %s %s %s %s %s %s %s",
+		row = fmt.Sprintf("%s %s %s",
 			idStr,
 			statusStr,
 			modelStr,
-			codeStr,
-			sizeStr,
-			durationStr,
-			inTokStr,
-			outTokStr,
-			costStr,
 		)
 	}
+
+	if cols.preview > 0 {
+		row += " " + previewStr
+	}
+	row = fmt.Sprintf("%s %s %s %s %s %s",
+		row,
+		codeStr,
+		sizeStr,
+		durationStr,
+		inTokStr,
+		outTokStr,
+	)
+	row += " " + costStr
 
 	if selected {
 		return selectedItemStyle.Render("▶ " + row)
@@ -1082,7 +1131,7 @@ func (m *model) renderMessagesTab() string {
 					BorderForeground(dimColor).
 					Padding(0, 2).
 					Width(textWidth)
-				reasoningBlock = reasoningInnerBox.Render(reasoningLabel+"\n\n"+renderMarkdown(reasoningText, textWidth-6))
+				reasoningBlock = reasoningInnerBox.Render(reasoningLabel + "\n\n" + renderMarkdown(reasoningText, textWidth-6))
 			}
 
 			headerText := clickableHeader

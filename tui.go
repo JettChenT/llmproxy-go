@@ -42,12 +42,13 @@ type model struct {
 	commandBuffer string // Accumulates the command after :
 
 	// Search and sort
-	searchMode       bool           // True when in search input mode
-	searchQuery      string         // Current search query
-	filteredRequests []*LLMRequest  // Requests matching search query
-	sortField        SortField      // Current sort field
-	sortDirection    SortDirection  // Current sort direction
-	searchIndexCache map[int]string // Cache of searchable text per request ID
+	searchMode          bool           // True when in search input mode
+	searchQuery         string         // Current search query
+	filteredRequests    []*LLMRequest  // Requests matching search query
+	sortField           SortField      // Current sort field
+	sortDirection       SortDirection  // Current sort direction
+	searchIndexCache    map[int]string // Cache of searchable text per request ID
+	requestPreviewCache map[int]string // Cache of list preview snippets per request ID
 
 	// Tape mode
 	tape             *Tape     // Loaded tape for playback
@@ -95,39 +96,41 @@ func newSaveInput() textinput.Model {
 
 func initialModel(listenAddr, targetURL string, saveTapeFile string) model {
 	return model{
-		requests:          make([]*LLMRequest, 0),
-		listenAddr:        listenAddr,
-		targetURL:         targetURL,
-		followLatest:      false,
-		tapeSpeed:         1,
-		saveTapeFile:      saveTapeFile,
-		collapsedMessages: make(map[int]bool),
-		toolsCollapsed:    true,
-		sortField:         SortByID,
-		sortDirection:     SortAsc,
-		searchIndexCache:  make(map[int]string),
-		saveInput:         newSaveInput(),
-		mouseEnabled:      true,
+		requests:            make([]*LLMRequest, 0),
+		listenAddr:          listenAddr,
+		targetURL:           targetURL,
+		followLatest:        false,
+		tapeSpeed:           1,
+		saveTapeFile:        saveTapeFile,
+		collapsedMessages:   make(map[int]bool),
+		toolsCollapsed:      true,
+		sortField:           SortByID,
+		sortDirection:       SortAsc,
+		searchIndexCache:    make(map[int]string),
+		requestPreviewCache: make(map[int]string),
+		saveInput:           newSaveInput(),
+		mouseEnabled:        true,
 	}
 }
 
 func initialTapeModel(tape *Tape) model {
 	return model{
-		requests:          tape.Requests,
-		tape:              tape,
-		tapeMode:          true,
-		tapeRealtime:      true,
-		followLatest:      false,
-		tapeSpeed:         1,
-		listenAddr:        tape.Session.ListenAddr,
-		targetURL:         tape.Session.TargetURL,
-		collapsedMessages: make(map[int]bool),
-		toolsCollapsed:    true,
-		sortField:         SortByID,
-		sortDirection:     SortAsc,
-		searchIndexCache:  make(map[int]string),
-		saveInput:         newSaveInput(),
-		mouseEnabled:      true,
+		requests:            tape.Requests,
+		tape:                tape,
+		tapeMode:            true,
+		tapeRealtime:        true,
+		followLatest:        false,
+		tapeSpeed:           1,
+		listenAddr:          tape.Session.ListenAddr,
+		targetURL:           tape.Session.TargetURL,
+		collapsedMessages:   make(map[int]bool),
+		toolsCollapsed:      true,
+		sortField:           SortByID,
+		sortDirection:       SortAsc,
+		searchIndexCache:    make(map[int]string),
+		requestPreviewCache: make(map[int]string),
+		saveInput:           newSaveInput(),
+		mouseEnabled:        true,
 	}
 }
 
