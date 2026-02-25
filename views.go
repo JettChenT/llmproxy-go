@@ -876,6 +876,19 @@ func (m *model) renderTabContent() string {
 	return ""
 }
 
+func formatMessagesInputTokenCount(req *LLMRequest) string {
+	if req == nil {
+		return "-"
+	}
+	if req.InputTokens > 0 {
+		return formatWithCommas(req.InputTokens)
+	}
+	if req.EstimatedInputTokens > 0 {
+		return "~" + formatWithCommas(req.EstimatedInputTokens) + " (estimated)"
+	}
+	return "-"
+}
+
 func (m *model) renderMessagesTab() string {
 	if len(m.selected.RequestBody) == 0 {
 		return contentStyle.Render("No request body")
@@ -908,9 +921,10 @@ func (m *model) renderMessagesTab() string {
 		MarginBottom(1).
 		MaxWidth(contentWidth)
 
-	meta := fmt.Sprintf("%s %s\n%s %s\n%s %.1f\n%s %d\n%s %v",
+	meta := fmt.Sprintf("%s %s\n%s %s\n%s %s\n%s %.1f\n%s %d\n%s %v",
 		labelStyle.Render("Model:"), req.Model,
 		labelStyle.Render("Endpoint:"), m.selected.Path,
+		labelStyle.Render("Input Tokens:"), formatMessagesInputTokenCount(m.selected),
 		labelStyle.Render("Temperature:"), req.Temperature,
 		labelStyle.Render("Max Tokens:"), req.MaxTokens,
 		labelStyle.Render("Stream:"), req.Stream,
@@ -1082,7 +1096,7 @@ func (m *model) renderMessagesTab() string {
 					BorderForeground(dimColor).
 					Padding(0, 2).
 					Width(textWidth)
-				reasoningBlock = reasoningInnerBox.Render(reasoningLabel+"\n\n"+renderMarkdown(reasoningText, textWidth-6))
+				reasoningBlock = reasoningInnerBox.Render(reasoningLabel + "\n\n" + renderMarkdown(reasoningText, textWidth-6))
 			}
 
 			headerText := clickableHeader
@@ -1515,9 +1529,10 @@ func (m *model) renderAnthropicMessagesTab() string {
 		MarginBottom(1).
 		MaxWidth(contentWidth)
 
-	meta := fmt.Sprintf("%s %s\n%s %s\n%s %d\n%s %v",
+	meta := fmt.Sprintf("%s %s\n%s %s\n%s %s\n%s %d\n%s %v",
 		labelStyle.Render("Model:"), req.Model,
 		labelStyle.Render("Endpoint:"), m.selected.Path,
+		labelStyle.Render("Input Tokens:"), formatMessagesInputTokenCount(m.selected),
 		labelStyle.Render("Max Tokens:"), req.MaxTokens,
 		labelStyle.Render("Stream:"), req.Stream,
 	)
