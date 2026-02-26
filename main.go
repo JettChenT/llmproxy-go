@@ -32,6 +32,18 @@ var (
 	inspectPath          string
 	inspectStatus        string
 	inspectCode          int
+	shareSessionID       string
+	shareLimit           int
+	shareRequestID       int
+	shareJSON            bool
+	shareSearch          string
+	shareModel           string
+	sharePath            string
+	shareStatus          string
+	shareCode            int
+	sharePlatformURL     string
+	shareAPIKey          string
+	shareTitle           string
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -136,6 +148,34 @@ Supports search/filtering by model/path/status/code, request detail by ID, and J
 	},
 }
 
+// shareCmd uploads one or more requests to the web share platform.
+var shareCmd = &cobra.Command{
+	Use:   "share --session <session-id>",
+	Short: "Upload request traces and return a share link",
+	Long: `Upload one or more requests from a live session to the web share platform
+and return a UUID-based share URL for teammates.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		opts := ShareOptions{
+			SessionID:   shareSessionID,
+			RequestID:   shareRequestID,
+			Limit:       shareLimit,
+			JSON:        shareJSON,
+			Search:      shareSearch,
+			Model:       shareModel,
+			Path:        sharePath,
+			Status:      shareStatus,
+			Code:        shareCode,
+			PlatformURL: sharePlatformURL,
+			APIKey:      shareAPIKey,
+			Title:       shareTitle,
+		}
+		if err := RunShareCommand(os.Stdout, opts); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	},
+}
+
 func init() {
 	// Root command flags
 	rootCmd.Flags().StringVarP(&configFile, "config", "c", "", "Path to TOML config file for multi-proxy configuration")
@@ -159,11 +199,30 @@ func init() {
 	inspectCmd.Flags().IntVar(&inspectCode, "code", 0, "Filter by exact HTTP status code")
 	_ = inspectCmd.MarkFlagRequired("session")
 
+	defaultSharePlatformURL := strings.TrimSpace(os.Getenv("LLMPROXY_SHARE_BASE_URL"))
+	if defaultSharePlatformURL == "" {
+		defaultSharePlatformURL = "http://localhost:3000"
+	}
+	shareCmd.Flags().StringVar(&shareSessionID, "session", "", "Session ID to share from")
+	shareCmd.Flags().IntVar(&shareRequestID, "request", 0, "Share one request ID in detail")
+	shareCmd.Flags().IntVar(&shareLimit, "limit", 1, "Number of most recent matched requests to share (0 = all)")
+	shareCmd.Flags().BoolVar(&shareJSON, "json", false, "Print JSON output")
+	shareCmd.Flags().StringVar(&shareSearch, "search", "", "Full-text search across model/path/body/response")
+	shareCmd.Flags().StringVar(&shareModel, "model", "", "Filter by model substring (case-insensitive)")
+	shareCmd.Flags().StringVar(&sharePath, "path", "", "Filter by path substring (case-insensitive)")
+	shareCmd.Flags().StringVar(&shareStatus, "status", "", "Filter by status: pending, complete, error")
+	shareCmd.Flags().IntVar(&shareCode, "code", 0, "Filter by exact HTTP status code")
+	shareCmd.Flags().StringVar(&sharePlatformURL, "platform", defaultSharePlatformURL, "Base URL of the share platform")
+	shareCmd.Flags().StringVar(&shareAPIKey, "api-key", strings.TrimSpace(os.Getenv("LLMPROXY_SHARE_API_KEY")), "Upload API key (optional)")
+	shareCmd.Flags().StringVar(&shareTitle, "title", "", "Optional title for the shared trace")
+	_ = shareCmd.MarkFlagRequired("session")
+
 	// Add subcommands
 	rootCmd.AddCommand(replayCmd)
 	rootCmd.AddCommand(costCmd)
 	rootCmd.AddCommand(genConfigCmd)
 	rootCmd.AddCommand(inspectCmd)
+	rootCmd.AddCommand(shareCmd)
 }
 
 func main() {
