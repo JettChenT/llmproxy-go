@@ -9,6 +9,7 @@ A lightweight debugging proxy for LLM API requests with a beautiful terminal UI.
 - 💾 **Smart Caching** - Memory and persistent caching with configurable TTL
 - 📼 **Session Recording** - Record sessions to "tape files" and replay them later
 - 🆔 **Session IDs + Inspect CLI** - Copy a live session ID and inspect recent requests from the command line
+- 🔗 **Share Links** - Upload request traces and share UUID links with a web visualization
 - 🔎 **Search & Filter** - Quickly find requests with fuzzy search
 - 📊 **Sortable Views** - Sort by duration, tokens, cost, status, and more
 - 🎯 **Provider Detection** - Automatic detection of OpenAI, Anthropic, and other providers
@@ -81,6 +82,7 @@ llmproxy-go --config config.toml # Start with config file (supports multiple pro
 llmproxy-go --gen-config         # Print example configuration to stdout
 llmproxy-go cost <tape-file>     # Print cost breakdown for a tape file
 llmproxy-go inspect --session ID # Inspect recent requests for a live session
+llmproxy-go share --session ID   # Upload requests and get a share URL
 ```
 
 ### Command-Line Flags
@@ -152,6 +154,35 @@ llmproxy-go inspect --session sess-abc123def456 --request 42 --json
 - `--status` filter (`pending`, `complete`, `error`)
 - `--code` exact HTTP status code filter
 - `--limit` keep only the most recent N matched requests (`0` = all)
+
+### Share Requests to the Web Platform
+
+`share` uploads one or more requests from session history to the Bun + Next.js web platform (`web/`) and returns a UUID link.
+
+```bash
+# Share one request by ID
+llmproxy-go share --session sess-abc123def456 --request 42
+
+# Share the latest matched request (default --limit=1)
+llmproxy-go share --session sess-abc123def456 --model gpt-4o --status error
+
+# Share all matched requests and print JSON output
+llmproxy-go share --session sess-abc123def456 --search "rate limit" --limit 0 --json
+```
+
+Optional environment variables:
+- `LLMPROXY_SHARE_BASE_URL` (default `http://localhost:3000`)
+- `LLMPROXY_SHARE_API_KEY` (sent as `X-LLMProxy-Api-Key`)
+
+Run the web platform:
+
+```bash
+cd web
+bun install
+bun run db:generate
+bun run db:migrate
+bun run dev
+```
 
 **Proxy Anthropic API:**
 ```bash
