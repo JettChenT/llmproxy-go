@@ -194,6 +194,7 @@ async function renderMessageBlock(block: VisualBlock, key: string) {
 
     return (
       <figure key={key} className="messageBlock imageFigure">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={block.src} alt="Request message content" className="messageImage" />
       </figure>
     );

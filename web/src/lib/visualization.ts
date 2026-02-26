@@ -128,7 +128,7 @@ function stringifyJSON(value: unknown) {
   }
 }
 
-function extractOpenAIContentBlocks(content: unknown) {
+function extractOpenAIContentBlocks(content: unknown): VisualBlock[] {
   const blocks: VisualBlock[] = [];
 
   if (typeof content === "string") {

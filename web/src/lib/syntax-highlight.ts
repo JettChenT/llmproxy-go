@@ -1,4 +1,4 @@
-import { createHighlighter, type HighlighterGeneric } from "shiki";
+import { createHighlighter } from "shiki";
 
 const SUPPORTED_LANGUAGES = new Set([
   "json",
@@ -11,9 +11,7 @@ const SUPPORTED_LANGUAGES = new Set([
   "plaintext",
 ]);
 
-let highlighterPromise: Promise<
-  HighlighterGeneric<string, string>
-> | null = null;
+let highlighterPromise: ReturnType<typeof createHighlighter> | null = null;
 
 function getHighlighter() {
   if (!highlighterPromise) {
