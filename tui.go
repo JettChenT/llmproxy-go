@@ -34,6 +34,7 @@ type model struct {
 	ready        bool
 	listenAddr   string
 	targetURL    string
+	sessionID    string
 	followLatest bool // Auto-scroll to latest request
 
 	// Vim-style navigation
@@ -94,11 +95,12 @@ func newSaveInput() textinput.Model {
 	return ti
 }
 
-func initialModel(listenAddr, targetURL string, saveTapeFile string) model {
+func initialModel(listenAddr, targetURL, saveTapeFile, sessionID string) model {
 	return model{
 		requests:            make([]*LLMRequest, 0),
 		listenAddr:          listenAddr,
 		targetURL:           targetURL,
+		sessionID:           sessionID,
 		followLatest:        false,
 		tapeSpeed:           1,
 		saveTapeFile:        saveTapeFile,
@@ -606,6 +608,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "y":
 			if m.showDetail && m.activeTab != TabMessages {
 				m.copyInputOutput()
+			}
+
+		case "Y":
+			if !m.showDetail && !m.tapeMode {
+				m.copySessionID()
 			}
 
 		case "n":

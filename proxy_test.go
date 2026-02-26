@@ -31,6 +31,7 @@ func resetTestState() {
 	requests = nil
 	requestID = 0
 	requestsMu.Unlock()
+	activeSessionHistory = nil
 }
 
 // waitForRequest waits for a request with the given ID to complete

@@ -97,7 +97,7 @@ func TestExtractRequestPreviewSnippetInvalidBody(t *testing.T) {
 }
 
 func TestGetRequestPreviewSnippetUsesCache(t *testing.T) {
-	m := initialModel(":8080", "https://api.openai.com", "")
+	m := initialModel(":8080", "https://api.openai.com", "", "")
 	req := &LLMRequest{
 		ID:   99,
 		Path: "/v1/chat/completions",
