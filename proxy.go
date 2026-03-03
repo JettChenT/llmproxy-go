@@ -440,10 +440,14 @@ func extractTokenUsage(req *LLMRequest, responseBody []byte) {
 	}
 
 	// Check for SSE data (streaming response)
+	// SSE streams may start with comment lines (": comment"), event lines, or data lines
 	trimmed := strings.TrimSpace(string(responseBody))
-	if strings.HasPrefix(trimmed, "event:") || strings.HasPrefix(trimmed, "data:") {
-		extractTokenUsageFromSSE(req, responseBody)
-		if req.Model != "" && (req.InputTokens > 0 || req.OutputTokens > 0) {
+	if strings.HasPrefix(trimmed, "event:") || strings.HasPrefix(trimmed, "data:") || strings.HasPrefix(trimmed, ":") {
+		providerCost := extractTokenUsageFromSSE(req, responseBody)
+		if providerCost > 0 {
+			// Prefer provider-reported cost (e.g., OpenRouter)
+			req.Cost = providerCost
+		} else if req.Model != "" && (req.InputTokens > 0 || req.OutputTokens > 0) {
 			cost := GetModelCost(req.ProviderID, req.Model)
 			if cost != nil {
 				req.Cost = CalculateCost(cost, req.InputTokens, req.OutputTokens)
@@ -459,11 +463,12 @@ func extractTokenUsage(req *LLMRequest, responseBody []byte) {
 	// Try to parse response with usage field (supports both OpenAI and Anthropic formats)
 	var resp struct {
 		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			TotalTokens      int `json:"total_tokens"`
-			InputTokens      int `json:"input_tokens"`
-			OutputTokens     int `json:"output_tokens"`
+			PromptTokens     int     `json:"prompt_tokens"`
+			CompletionTokens int     `json:"completion_tokens"`
+			TotalTokens      int     `json:"total_tokens"`
+			InputTokens      int     `json:"input_tokens"`
+			OutputTokens     int     `json:"output_tokens"`
+			Cost             float64 `json:"cost"`
 		} `json:"usage"`
 	}
 
@@ -483,8 +488,10 @@ func extractTokenUsage(req *LLMRequest, responseBody []byte) {
 		req.OutputTokens = resp.Usage.OutputTokens
 	}
 
-	// Calculate cost if we have provider and model info
-	if req.Model != "" {
+	// Calculate cost: prefer provider-reported cost, fallback to model DB lookup
+	if resp.Usage.Cost > 0 {
+		req.Cost = resp.Usage.Cost
+	} else if req.Model != "" {
 		cost := GetModelCost(req.ProviderID, req.Model)
 		if cost != nil {
 			req.Cost = CalculateCost(cost, req.InputTokens, req.OutputTokens)
@@ -498,9 +505,178 @@ func extractTokenUsage(req *LLMRequest, responseBody []byte) {
 	}
 }
 
+// reassembleSSEResponse reconstructs an OpenAIResponse from SSE streaming chunks.
+// It accumulates delta.content and delta.reasoning into a single response with usage info.
+func reassembleSSEResponse(data []byte) *OpenAIResponse {
+	lines := strings.Split(string(data), "\n")
+
+	resp := &OpenAIResponse{}
+	// Track content and reasoning per choice index
+	choiceContent := make(map[int]*strings.Builder)
+	choiceReasoning := make(map[int]*strings.Builder)
+	choiceFinishReason := make(map[int]string)
+	choiceToolCalls := make(map[int]map[int]*ToolCall) // choice index -> tool call index -> tool call
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data: ") && !strings.HasPrefix(line, "data:") {
+			continue
+		}
+
+		jsonData := strings.TrimPrefix(line, "data: ")
+		jsonData = strings.TrimPrefix(jsonData, "data:")
+		jsonData = strings.TrimSpace(jsonData)
+		if jsonData == "" || jsonData == "[DONE]" {
+			continue
+		}
+
+		var chunk struct {
+			ID      string `json:"id"`
+			Model   string `json:"model"`
+			Choices []struct {
+				Index int `json:"index"`
+				Delta struct {
+					Content          string     `json:"content"`
+					Role             string     `json:"role"`
+					Reasoning        string     `json:"reasoning"`
+					ReasoningContent string     `json:"reasoning_content"`
+					ToolCalls        []ToolCall `json:"tool_calls"`
+				} `json:"delta"`
+				FinishReason *string `json:"finish_reason"`
+			} `json:"choices"`
+			Usage struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+			} `json:"usage"`
+		}
+
+		if err := json.Unmarshal([]byte(jsonData), &chunk); err != nil {
+			continue
+		}
+
+		if resp.ID == "" && chunk.ID != "" {
+			resp.ID = chunk.ID
+		}
+		if resp.Model == "" && chunk.Model != "" {
+			resp.Model = chunk.Model
+		}
+
+		for _, choice := range chunk.Choices {
+			idx := choice.Index
+			if _, ok := choiceContent[idx]; !ok {
+				choiceContent[idx] = &strings.Builder{}
+				choiceReasoning[idx] = &strings.Builder{}
+			}
+			if choice.Delta.Content != "" {
+				choiceContent[idx].WriteString(choice.Delta.Content)
+			}
+			if choice.Delta.Reasoning != "" {
+				choiceReasoning[idx].WriteString(choice.Delta.Reasoning)
+			}
+			if choice.Delta.ReasoningContent != "" {
+				choiceReasoning[idx].WriteString(choice.Delta.ReasoningContent)
+			}
+			if choice.FinishReason != nil && *choice.FinishReason != "" {
+				choiceFinishReason[idx] = *choice.FinishReason
+			}
+			// Accumulate tool calls
+			for _, tc := range choice.Delta.ToolCalls {
+				if choiceToolCalls[idx] == nil {
+					choiceToolCalls[idx] = make(map[int]*ToolCall)
+				}
+				existing, ok := choiceToolCalls[idx][tc.Index]
+				if !ok {
+					newTC := ToolCall{
+						ID:   tc.ID,
+						Type: tc.Type,
+						Function: ToolCallFunction{
+							Name:      tc.Function.Name,
+							Arguments: tc.Function.Arguments,
+						},
+					}
+					choiceToolCalls[idx][tc.Index] = &newTC
+				} else {
+					if tc.ID != "" {
+						existing.ID = tc.ID
+					}
+					if tc.Function.Name != "" {
+						existing.Function.Name += tc.Function.Name
+					}
+					existing.Function.Arguments += tc.Function.Arguments
+				}
+			}
+		}
+
+		if chunk.Usage.PromptTokens > 0 {
+			resp.Usage.PromptTokens = chunk.Usage.PromptTokens
+		}
+		if chunk.Usage.CompletionTokens > 0 {
+			resp.Usage.CompletionTokens = chunk.Usage.CompletionTokens
+		}
+		if chunk.Usage.TotalTokens > 0 {
+			resp.Usage.TotalTokens = chunk.Usage.TotalTokens
+		}
+	}
+
+	// Build choices from accumulated data
+	maxIdx := -1
+	for idx := range choiceContent {
+		if idx > maxIdx {
+			maxIdx = idx
+		}
+	}
+
+	if maxIdx < 0 {
+		return nil
+	}
+
+	resp.Choices = make([]OpenAIChoice, maxIdx+1)
+	for i := 0; i <= maxIdx; i++ {
+		choice := OpenAIChoice{Index: i}
+		if cb, ok := choiceContent[i]; ok {
+			choice.Message.Content = cb.String()
+		}
+		if rb, ok := choiceReasoning[i]; ok && rb.Len() > 0 {
+			choice.Message.ReasoningContent = rb.String()
+		}
+		if fr, ok := choiceFinishReason[i]; ok {
+			choice.FinishReason = fr
+		}
+		// Collect tool calls in order
+		if tcs, ok := choiceToolCalls[i]; ok && len(tcs) > 0 {
+			maxTCIdx := -1
+			for tcIdx := range tcs {
+				if tcIdx > maxTCIdx {
+					maxTCIdx = tcIdx
+				}
+			}
+			for tcIdx := 0; tcIdx <= maxTCIdx; tcIdx++ {
+				if tc, ok := tcs[tcIdx]; ok {
+					if tc.Type == "" {
+						tc.Type = "function"
+					}
+					choice.Message.ToolCalls = append(choice.Message.ToolCalls, *tc)
+				}
+			}
+		}
+		choice.Message.Role = "assistant"
+		resp.Choices[i] = choice
+	}
+
+	return resp
+}
+
+// isSSEData returns true if the data appears to be SSE format
+func isSSEData(data []byte) bool {
+	trimmed := strings.TrimSpace(string(data))
+	return strings.HasPrefix(trimmed, "event:") || strings.HasPrefix(trimmed, "data:") || strings.HasPrefix(trimmed, ":")
+}
+
 // extractTokenUsageFromSSE parses SSE events to extract token usage from streaming responses.
 // Handles both Anthropic SSE (message_start/message_delta events) and OpenAI SSE (usage in data chunks).
-func extractTokenUsageFromSSE(req *LLMRequest, data []byte) {
+// Returns the provider-reported cost if present in the usage data (e.g., OpenRouter).
+func extractTokenUsageFromSSE(req *LLMRequest, data []byte) (providerCost float64) {
 	lines := strings.Split(string(data), "\n")
 
 	for _, line := range lines {
@@ -525,10 +701,11 @@ func extractTokenUsageFromSSE(req *LLMRequest, data []byte) {
 				} `json:"usage"`
 			} `json:"message"`
 			Usage struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
-				InputTokens      int `json:"input_tokens"`
-				OutputTokens     int `json:"output_tokens"`
+				PromptTokens     int     `json:"prompt_tokens"`
+				CompletionTokens int     `json:"completion_tokens"`
+				InputTokens      int     `json:"input_tokens"`
+				OutputTokens     int     `json:"output_tokens"`
+				Cost             float64 `json:"cost"`
 			} `json:"usage"`
 		}
 
@@ -553,5 +730,11 @@ func extractTokenUsageFromSSE(req *LLMRequest, data []byte) {
 		if event.Usage.CompletionTokens > 0 {
 			req.OutputTokens = event.Usage.CompletionTokens
 		}
+
+		// Provider-reported cost (e.g., OpenRouter includes cost in usage)
+		if event.Usage.Cost > 0 {
+			providerCost = event.Usage.Cost
+		}
 	}
+	return providerCost
 }

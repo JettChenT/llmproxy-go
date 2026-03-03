@@ -698,6 +698,159 @@ data: [DONE]
 	}
 }
 
+func TestExtractTokenUsageFromSSE_OpenRouterWithComments(t *testing.T) {
+	req := &LLMRequest{
+		ID:    1,
+		Model: "anthropic/claude-4.6-sonnet",
+	}
+
+	// OpenRouter SSE starts with comment lines (": OPENROUTER PROCESSING")
+	// and includes cost in the final usage chunk
+	sseData := []byte(`: OPENROUTER PROCESSING
+
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-123","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Hello","role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"gen-123","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":237911,"completion_tokens":118,"total_tokens":238029,"cost":1.430121}}
+
+data: [DONE]
+`)
+
+	providerCost := extractTokenUsageFromSSE(req, sseData)
+
+	if req.InputTokens != 237911 {
+		t.Errorf("InputTokens = %d, want 237911", req.InputTokens)
+	}
+	if req.OutputTokens != 118 {
+		t.Errorf("OutputTokens = %d, want 118", req.OutputTokens)
+	}
+	if providerCost != 1.430121 {
+		t.Errorf("providerCost = %f, want 1.430121", providerCost)
+	}
+}
+
+func TestExtractTokenUsage_DetectsSSEWithCommentPrefix(t *testing.T) {
+	// Verify that extractTokenUsage detects SSE starting with comment lines
+	req := &LLMRequest{
+		ID:    1,
+		Model: "anthropic/claude-4.6-sonnet",
+	}
+
+	sseData := []byte(`: OPENROUTER PROCESSING
+
+data: {"id":"gen-123","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"cost":0.5}}
+
+data: [DONE]
+`)
+
+	extractTokenUsage(req, sseData)
+
+	if req.InputTokens != 100 {
+		t.Errorf("InputTokens = %d, want 100", req.InputTokens)
+	}
+	if req.OutputTokens != 50 {
+		t.Errorf("OutputTokens = %d, want 50", req.OutputTokens)
+	}
+	if req.Cost != 0.5 {
+		t.Errorf("Cost = %f, want 0.5", req.Cost)
+	}
+}
+
+func TestReassembleSSEResponse_OpenRouter(t *testing.T) {
+	sseData := []byte(`: OPENROUTER PROCESSING
+
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-123","object":"chat.completion.chunk","created":1772566436,"model":"anthropic/claude-4.6-sonnet","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"The user"},"finish_reason":null}]}
+
+data: {"id":"gen-123","object":"chat.completion.chunk","created":1772566436,"model":"anthropic/claude-4.6-sonnet","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" is asking"},"finish_reason":null}]}
+
+data: {"id":"gen-123","object":"chat.completion.chunk","created":1772566436,"model":"anthropic/claude-4.6-sonnet","choices":[{"index":0,"delta":{"content":"hey","role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"gen-123","object":"chat.completion.chunk","created":1772566436,"model":"anthropic/claude-4.6-sonnet","choices":[{"index":0,"delta":{"content":"! I'm PB.","role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"gen-123","object":"chat.completion.chunk","created":1772566436,"model":"anthropic/claude-4.6-sonnet","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"stop"}]}
+
+data: {"id":"gen-123","object":"chat.completion.chunk","created":1772566436,"model":"anthropic/claude-4.6-sonnet","choices":[],"usage":{"prompt_tokens":237911,"completion_tokens":118,"total_tokens":238029}}
+
+data: [DONE]
+`)
+
+	resp := reassembleSSEResponse(sseData)
+	if resp == nil {
+		t.Fatal("reassembleSSEResponse returned nil")
+	}
+
+	if resp.ID != "gen-123" {
+		t.Errorf("ID = %q, want %q", resp.ID, "gen-123")
+	}
+	if resp.Model != "anthropic/claude-4.6-sonnet" {
+		t.Errorf("Model = %q, want %q", resp.Model, "anthropic/claude-4.6-sonnet")
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("len(Choices) = %d, want 1", len(resp.Choices))
+	}
+
+	content, ok := resp.Choices[0].Message.Content.(string)
+	if !ok {
+		t.Fatal("Content is not a string")
+	}
+	if content != "hey! I'm PB." {
+		t.Errorf("Content = %q, want %q", content, "hey! I'm PB.")
+	}
+	if resp.Choices[0].Message.ReasoningContent != "The user is asking" {
+		t.Errorf("ReasoningContent = %q, want %q", resp.Choices[0].Message.ReasoningContent, "The user is asking")
+	}
+	if resp.Choices[0].FinishReason != "stop" {
+		t.Errorf("FinishReason = %q, want %q", resp.Choices[0].FinishReason, "stop")
+	}
+	if resp.Usage.PromptTokens != 237911 {
+		t.Errorf("PromptTokens = %d, want 237911", resp.Usage.PromptTokens)
+	}
+	if resp.Usage.CompletionTokens != 118 {
+		t.Errorf("CompletionTokens = %d, want 118", resp.Usage.CompletionTokens)
+	}
+}
+
+func TestReassembleSSEResponse_ToolCalls(t *testing.T) {
+	sseData := []byte(`data: {"id":"chatcmpl-456","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-456","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-456","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"NYC\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-456","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+`)
+
+	resp := reassembleSSEResponse(sseData)
+	if resp == nil {
+		t.Fatal("reassembleSSEResponse returned nil")
+	}
+
+	if len(resp.Choices) != 1 {
+		t.Fatalf("len(Choices) = %d, want 1", len(resp.Choices))
+	}
+	if len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("len(ToolCalls) = %d, want 1", len(resp.Choices[0].Message.ToolCalls))
+	}
+	tc := resp.Choices[0].Message.ToolCalls[0]
+	if tc.ID != "call_abc" {
+		t.Errorf("ToolCall ID = %q, want %q", tc.ID, "call_abc")
+	}
+	if tc.Function.Name != "get_weather" {
+		t.Errorf("ToolCall Name = %q, want %q", tc.Function.Name, "get_weather")
+	}
+	if tc.Function.Arguments != `{"city":"NYC"}` {
+		t.Errorf("ToolCall Arguments = %q, want %q", tc.Function.Arguments, `{"city":"NYC"}`)
+	}
+	if resp.Choices[0].FinishReason != "tool_calls" {
+		t.Errorf("FinishReason = %q, want %q", resp.Choices[0].FinishReason, "tool_calls")
+	}
+}
+
 func TestExtractTokenUsage_DetectsSSE(t *testing.T) {
 	// Verify that extractTokenUsage correctly detects SSE format and delegates
 	req := &LLMRequest{

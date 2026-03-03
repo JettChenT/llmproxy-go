@@ -1239,8 +1239,26 @@ func (m *model) renderOutputTab() string {
 
 	var resp OpenAIResponse
 	if err := json.Unmarshal(m.selected.ResponseBody, &resp); err != nil {
-		// Try to show raw response if not standard OpenAI format
-		return renderJSONBody(m.selected.ResponseBody, "Response")
+		// Try reassembling SSE streaming chunks into a structured response
+		if isSSEData(m.selected.ResponseBody) {
+			if assembled := reassembleSSEResponse(m.selected.ResponseBody); assembled != nil {
+				// Use extracted token counts from the request if SSE usage is missing
+				if assembled.Usage.PromptTokens == 0 && m.selected.InputTokens > 0 {
+					assembled.Usage.PromptTokens = m.selected.InputTokens
+				}
+				if assembled.Usage.CompletionTokens == 0 && m.selected.OutputTokens > 0 {
+					assembled.Usage.CompletionTokens = m.selected.OutputTokens
+				}
+				if assembled.Usage.TotalTokens == 0 {
+					assembled.Usage.TotalTokens = assembled.Usage.PromptTokens + assembled.Usage.CompletionTokens
+				}
+				resp = *assembled
+			} else {
+				return renderJSONBody(m.selected.ResponseBody, "Response")
+			}
+		} else {
+			return renderJSONBody(m.selected.ResponseBody, "Response")
+		}
 	}
 
 	var b strings.Builder
@@ -1265,11 +1283,17 @@ func (m *model) renderOutputTab() string {
 		labelStyle.Render("Completion Tokens:"), resp.Usage.CompletionTokens,
 		labelStyle.Render("Total Tokens:"), resp.Usage.TotalTokens,
 	)
+	if m.selected.IsStreaming {
+		meta += fmt.Sprintf("\n%s %s", labelStyle.Render("Mode:"), "Streaming (reassembled)")
+	}
 	if m.selected.TTFT > 0 {
 		meta += fmt.Sprintf("\n%s %s", labelStyle.Render("TTFT:"), formatDuration(m.selected.TTFT))
 	}
 	if m.selected.Duration > 0 {
 		meta += fmt.Sprintf("\n%s %s", labelStyle.Render("Total Latency:"), formatDuration(m.selected.Duration))
+	}
+	if m.selected.Cost > 0 {
+		meta += fmt.Sprintf("\n%s %s", labelStyle.Render("Cost:"), formatCost(m.selected.Cost))
 	}
 	metaRendered := metaBox.Render(meta)
 	b.WriteString(metaRendered)
@@ -1322,12 +1346,29 @@ func (m *model) renderOutputTab() string {
 			Padding(1, 2).
 			Width(contentWidth)
 
+		// Build reasoning block if present
+		reasoningBlock := ""
+		if choice.Message.ReasoningContent != "" {
+			reasoningLabel := lipgloss.NewStyle().
+				Foreground(dimColor).
+				Bold(true).
+				Render("💭 THINKING")
+			reasoningText := sanitizeForTerminal(choice.Message.ReasoningContent)
+			reasoningInnerBox := lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(dimColor).
+				Padding(0, 2).
+				Width(textWidth)
+			reasoningBlock = reasoningInnerBox.Render(reasoningLabel+"\n\n"+renderMarkdown(reasoningText, textWidth-6)) + "\n\n"
+		}
+
 		var msgContent string
 		hasToolCalls := len(choice.Message.ToolCalls) > 0
 
 		if hasToolCalls {
 			// Tool call response
 			msgContent = roleStyled + "\n\n"
+			msgContent += reasoningBlock
 			if content != "" && content != "null" && content != "\"\"" {
 				msgContent += renderMarkdown(content, textWidth) + "\n\n"
 			}
@@ -1335,7 +1376,7 @@ func (m *model) renderOutputTab() string {
 			msgContent += "\n\n" + finishInfo
 		} else {
 			// Regular text response
-			msgContent = fmt.Sprintf("%s\n\n%s\n\n%s", roleStyled, renderMarkdown(content, textWidth), finishInfo)
+			msgContent = roleStyled + "\n\n" + reasoningBlock + renderMarkdown(content, textWidth) + "\n\n" + finishInfo
 		}
 
 		rendered := msgBox.Render(msgContent)
