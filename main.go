@@ -32,6 +32,7 @@ var (
 	inspectPath          string
 	inspectStatus        string
 	inspectCode          int
+	useBase16Theme       bool
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -48,6 +49,8 @@ Examples:
   llmproxy-go replay session.tape          Replay a recorded tape file
   llmproxy-go cost session.tape            Show cost breakdown for a tape`,
 	Run: func(cmd *cobra.Command, args []string) {
+		initThemeFromFlag()
+
 		// Check if using config file mode
 		if configFile != "" {
 			runWithConfig(configFile)
@@ -67,6 +70,8 @@ var replayCmd = &cobra.Command{
 Tape files contain recorded API requests and responses.`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		initThemeFromFlag()
+
 		tapeFile := args[0]
 		tape, err := LoadTape(tapeFile)
 		if err != nil {
@@ -146,6 +151,10 @@ func init() {
 	rootCmd.Flags().DurationVar(&cacheTTL, "cache-ttl", 24*time.Hour, "Cache TTL duration (e.g., 1h, 24h)")
 	rootCmd.Flags().BoolVar(&cacheSimulateLatency, "cache-simulate-latency", false, "Simulate original response latency for cached responses")
 	rootCmd.Flags().StringVar(&cacheDir, "cache-dir", "", "Directory for badger cache (default: ~/.llmproxy-cache)")
+	rootCmd.Flags().BoolVar(&useBase16Theme, "base16", true, "Derive 256-color palette from terminal's base16 theme (disable with --base16=false)")
+
+	// Also add --base16 to the replay command so tape playback can use it
+	replayCmd.Flags().BoolVar(&useBase16Theme, "base16", true, "Derive 256-color palette from terminal's base16 theme (disable with --base16=false)")
 
 	// Inspect command flags
 	inspectCmd.Flags().StringVar(&inspectSessionID, "session", "", "Session ID to inspect")
@@ -166,9 +175,30 @@ func init() {
 	rootCmd.AddCommand(inspectCmd)
 }
 
+// initThemeFromFlag initializes the theme based on the --base16 flag.
+func initThemeFromFlag() {
+	mode := ThemeDefault
+	if useBase16Theme {
+		mode = ThemeBase16
+	}
+	if msg := initTheme(mode); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+	}
+	initStyles()
+}
+
+func init() {
+	// Initialize default theme so non-TUI commands (cost, inspect, gen-config)
+	// have valid styles even if initThemeFromFlag is never called.
+	initTheme(ThemeDefault)
+	initStyles()
+}
+
 func main() {
 	// Clean up any temp images on exit
 	defer cleanupTempImages()
+	// Restore terminal palette if we modified it
+	defer restoreTerminalPalette()
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)

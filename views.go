@@ -89,7 +89,7 @@ func (m model) renderSaveDialog() string {
 		Render("💾 Save Tape")
 
 	prompt := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#E2E8F0")).
+		Foreground(textColor).
 		Render("Enter filename:")
 
 	// Use the textinput's View method for proper cursor and input rendering
@@ -159,7 +159,7 @@ func (m *model) renderCostBreakdownPanel() string {
 	b.WriteString("\n")
 
 	headerStyle := lipgloss.NewStyle().Foreground(dimColor).Bold(true)
-	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#E2E8F0"))
+	valueStyle := lipgloss.NewStyle().Foreground(textColor)
 	costStyle := lipgloss.NewStyle().Foreground(successColor).Bold(true)
 
 	// Sort models by cost descending
@@ -249,7 +249,7 @@ func (m *model) renderCostBreakdownPanel() string {
 		"  " + strings.Repeat("━", 50)))
 	b.WriteString("\n")
 	totalLabelStyle := lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
-	totalValueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#E2E8F0"))
+	totalValueStyle := lipgloss.NewStyle().Foreground(textColor)
 	totalCostStyle := lipgloss.NewStyle().Foreground(successColor).Bold(true)
 
 	b.WriteString(totalLabelStyle.Render("  Requests: "))
@@ -326,7 +326,7 @@ func (m *model) renderListView() string {
 	// Search bar
 	if m.searchMode {
 		searchPrompt := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render("/")
-		searchInput := lipgloss.NewStyle().Foreground(lipgloss.Color("#E2E8F0")).Render(m.searchQuery + "█")
+		searchInput := lipgloss.NewStyle().Foreground(textColor).Render(m.searchQuery + "█")
 		searchHint := lipgloss.NewStyle().Foreground(dimColor).Render(" (enter to confirm, esc to cancel)")
 		b.WriteString(searchPrompt + searchInput + searchHint)
 	} else if m.searchQuery != "" {
