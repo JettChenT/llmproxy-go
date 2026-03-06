@@ -661,7 +661,11 @@ func (m *model) renderRequestRow(req *LLMRequest, selected bool) string {
 	var statusStyle lipgloss.Style
 	switch req.Status {
 	case StatusPending:
-		statusText = "●  PENDING"
+		if req.IsStreaming && len(req.ResponseBody) > 0 {
+			statusText = "↻ STREAMING"
+		} else {
+			statusText = "●  PENDING"
+		}
 		statusStyle = pendingStyle
 	case StatusComplete:
 		if req.CachedResponse {
@@ -724,10 +728,12 @@ func (m *model) renderRequestRow(req *LLMRequest, selected bool) string {
 	}
 	codeStr := codeStyle.Render(fmt.Sprintf("%-*s", cols.code, codeText))
 
-	// Size column (no styling needed)
+	// Size column (show live bytes while streaming)
 	sizeText := "-"
 	if req.ResponseSize > 0 {
 		sizeText = formatBytes(req.ResponseSize)
+	} else if req.Status == StatusPending && len(req.ResponseBody) > 0 {
+		sizeText = formatBytes(len(req.ResponseBody))
 	}
 	sizeStr := fmt.Sprintf("%-*s", cols.size, sizeText)
 
@@ -738,6 +744,13 @@ func (m *model) renderRequestRow(req *LLMRequest, selected bool) string {
 			durationText = fmt.Sprintf("%s/%s", formatDuration(req.TTFT), formatDuration(req.Duration))
 		} else {
 			durationText = formatDuration(req.Duration)
+		}
+	} else if req.Status == StatusPending {
+		elapsed := time.Since(req.StartTime)
+		if req.IsStreaming && req.TTFT > 0 {
+			durationText = fmt.Sprintf("%s/%s", formatDuration(req.TTFT), formatDuration(elapsed))
+		} else if elapsed > 0 {
+			durationText = formatDuration(elapsed)
 		}
 	}
 	durationStr := fmt.Sprintf("%-*s", cols.duration, durationText)
@@ -1284,7 +1297,11 @@ func (m *model) renderOutputTab() string {
 		labelStyle.Render("Total Tokens:"), resp.Usage.TotalTokens,
 	)
 	if m.selected.IsStreaming {
-		meta += fmt.Sprintf("\n%s %s", labelStyle.Render("Mode:"), "Streaming (reassembled)")
+		modeLabel := "Streaming (reassembled)"
+		if m.selected.Status == StatusPending {
+			modeLabel = "Streaming live…"
+		}
+		meta += fmt.Sprintf("\n%s %s", labelStyle.Render("Mode:"), modeLabel)
 	}
 	if m.selected.TTFT > 0 {
 		meta += fmt.Sprintf("\n%s %s", labelStyle.Render("TTFT:"), formatDuration(m.selected.TTFT))
@@ -1469,23 +1486,32 @@ func (m model) renderRawRequest() string {
 }
 
 func (m model) renderRawResponse() string {
-	if m.selected.Status == StatusPending {
+	if m.selected.Status == StatusPending && len(m.selected.ResponseBody) == 0 {
 		return pendingStyle.Render("⏳ Waiting for response...")
 	}
 
 	var b strings.Builder
 
 	// HTTP Status Line
-	statusText := http.StatusText(m.selected.StatusCode)
+	statusCode := m.selected.StatusCode
+	statusText := http.StatusText(statusCode)
 	statusColor := successColor
-	if m.selected.StatusCode >= 400 {
+	if statusCode == 0 && m.selected.Status == StatusPending {
+		statusColor = warningColor
+		statusText = "Streaming in progress"
+	}
+	if statusCode >= 400 {
 		statusColor = errorColor
-	} else if m.selected.StatusCode >= 300 {
+	} else if statusCode >= 300 {
 		statusColor = warningColor
 	}
 
+	statusLineCode := fmt.Sprintf("HTTP/1.1 %d", statusCode)
+	if statusCode == 0 && m.selected.Status == StatusPending {
+		statusLineCode = "HTTP/1.1 …"
+	}
 	statusLine := fmt.Sprintf("%s %s",
-		lipgloss.NewStyle().Foreground(statusColor).Bold(true).Render(fmt.Sprintf("HTTP/1.1 %d", m.selected.StatusCode)),
+		lipgloss.NewStyle().Foreground(statusColor).Bold(true).Render(statusLineCode),
 		lipgloss.NewStyle().Foreground(statusColor).Render(statusText))
 	b.WriteString(statusLine)
 	b.WriteString("\n")

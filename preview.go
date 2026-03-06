@@ -15,6 +15,11 @@ func (m *model) getRequestPreviewSnippet(req *LLMRequest) string {
 	if req == nil {
 		return ""
 	}
+	if req.IsStreaming && len(req.ResponseBody) > 0 {
+		if snippet := extractStreamingResponsePreviewSnippet(req.ResponseBody); snippet != "" {
+			return snippet
+		}
+	}
 	if m.requestPreviewCache == nil {
 		m.requestPreviewCache = make(map[int]string)
 	}
@@ -108,6 +113,58 @@ func extractOpenAITextContent(content interface{}) string {
 		return strings.Join(parts, "\n")
 	}
 	return ""
+}
+
+func extractStreamingResponsePreviewSnippet(responseBody []byte) string {
+	if len(responseBody) == 0 {
+		return ""
+	}
+
+	if isSSEData(responseBody) {
+		if assembled := reassembleSSEResponse(responseBody); assembled != nil {
+			for _, choice := range assembled.Choices {
+				if snippet := normalizePreviewSnippet(extractOpenAITextContent(choice.Message.Content)); snippet != "" {
+					return snippet
+				}
+				if snippet := normalizePreviewSnippet(choice.Message.ReasoningContent); snippet != "" {
+					return snippet
+				}
+			}
+		}
+
+		lines := strings.Split(string(responseBody), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if payload == "" || payload == "[DONE]" {
+				continue
+			}
+			if snippet := normalizePreviewSnippet(payload); snippet != "" {
+				return snippet
+			}
+		}
+	}
+
+	var openAIResp OpenAIResponse
+	if err := json.Unmarshal(responseBody, &openAIResp); err == nil {
+		for _, choice := range openAIResp.Choices {
+			if snippet := normalizePreviewSnippet(extractOpenAITextContent(choice.Message.Content)); snippet != "" {
+				return snippet
+			}
+		}
+	}
+
+	var anthropicResp AnthropicResponse
+	if err := json.Unmarshal(responseBody, &anthropicResp); err == nil {
+		if snippet := normalizePreviewSnippet(extractAnthropicTextContent(anthropicResp.Content)); snippet != "" {
+			return snippet
+		}
+	}
+
+	return normalizePreviewSnippet(string(responseBody))
 }
 
 func normalizePreviewSnippet(text string) string {

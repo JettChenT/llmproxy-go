@@ -30,10 +30,12 @@ var (
 // Response recorder for capturing response
 type responseRecorder struct {
 	http.ResponseWriter
+	mu             sync.Mutex
 	statusCode     int
 	body           *bytes.Buffer
 	wroteHeader    bool
 	firstWriteTime time.Time // Time of first Write() call (TTFT proxy)
+	onWrite        func()
 }
 
 func newResponseRecorder(w http.ResponseWriter) *responseRecorder {
@@ -45,17 +47,36 @@ func newResponseRecorder(w http.ResponseWriter) *responseRecorder {
 }
 
 func (r *responseRecorder) WriteHeader(code int) {
+	r.mu.Lock()
 	r.statusCode = code
 	r.wroteHeader = true
+	r.mu.Unlock()
 	r.ResponseWriter.WriteHeader(code)
 }
 
 func (r *responseRecorder) Write(b []byte) (int, error) {
+	r.mu.Lock()
 	if r.firstWriteTime.IsZero() {
 		r.firstWriteTime = time.Now()
 	}
 	r.body.Write(b)
+	onWrite := r.onWrite
+	r.mu.Unlock()
+
+	if onWrite != nil {
+		onWrite()
+	}
 	return r.ResponseWriter.Write(b)
+}
+
+func (r *responseRecorder) snapshot() (statusCode int, responseBody []byte, firstWriteTime time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	statusCode = r.statusCode
+	responseBody = append([]byte(nil), r.body.Bytes()...)
+	firstWriteTime = r.firstWriteTime
+	return
 }
 
 // Header returns the header map that will be sent by WriteHeader
@@ -337,15 +358,6 @@ func createProxyHandler(proxyName, listenAddr string, target *url.URL, proxy *ht
 			})
 		}
 
-		cancelDone := make(chan struct{})
-		go func() {
-			select {
-			case <-r.Context().Done():
-				finalize(499, nil, nil, 0)
-			case <-cancelDone:
-			}
-		}()
-
 		// Handle cache hit
 		if cacheHit && cachedEntry != nil {
 			// Simulate latency if configured
@@ -375,38 +387,106 @@ func createProxyHandler(proxyName, listenAddr string, target *url.URL, proxy *ht
 			w.Header().Set("Content-Length", strconv.Itoa(len(cachedEntry.ResponseBody)))
 			w.WriteHeader(cachedEntry.StatusCode)
 			w.Write(cachedEntry.ResponseBody)
-			close(cancelDone)
 			finalize(cachedEntry.StatusCode, cachedEntry.ResponseHeaders, cachedEntry.ResponseBody, len(cachedEntry.ResponseBody))
 			return
 		}
 
 		// Proxy the request
 		recorder := newResponseRecorder(w)
+
+		var liveUpdateMu sync.Mutex
+		var lastLiveUpdate time.Time
+		var lastLiveBytes int
+		publishLiveStreamUpdate := func() {
+			if !isStreaming {
+				return
+			}
+
+			statusCode, responseBody, firstWriteTime := recorder.snapshot()
+			if len(responseBody) == 0 {
+				return
+			}
+
+			liveUpdateMu.Lock()
+			now := time.Now()
+			shouldPublish := len(responseBody) != lastLiveBytes && (lastLiveUpdate.IsZero() || now.Sub(lastLiveUpdate) >= 75*time.Millisecond)
+			if !shouldPublish {
+				liveUpdateMu.Unlock()
+				return
+			}
+			lastLiveUpdate = now
+			lastLiveBytes = len(responseBody)
+			liveUpdateMu.Unlock()
+
+			req.StatusCode = statusCode
+			req.ResponseBody = responseBody
+			req.ResponseSize = len(responseBody)
+			if !firstWriteTime.IsZero() {
+				req.TTFT = firstWriteTime.Sub(startTime)
+			}
+
+			respHeaders := make(map[string][]string)
+			for k, v := range recorder.Header() {
+				respHeaders[k] = v
+			}
+			req.ResponseHeaders = respHeaders
+
+			RecordSessionRequest(req)
+			if tapeWriter != nil {
+				tapeWriter.WriteRequestUpdate(req)
+			}
+			if program != nil {
+				program.Send(requestUpdatedMsg{req: req})
+			}
+		}
+		recorder.onWrite = publishLiveStreamUpdate
+
+		finalizeFromRecorder := func(overrideStatusCode int) {
+			recorderStatusCode, responseBody, firstWriteTime := recorder.snapshot()
+
+			// Track TTFT (time from request start to first response byte)
+			if !firstWriteTime.IsZero() {
+				req.TTFT = firstWriteTime.Sub(startTime)
+			}
+
+			// Get Content-Encoding from response headers
+			contentEncoding := recorder.Header().Get("Content-Encoding")
+
+			// Copy response headers
+			respHeaders := make(map[string][]string)
+			for k, v := range recorder.Header() {
+				respHeaders[k] = v
+			}
+
+			// Decompress if needed for storage (we still pass compressed data to client)
+			decompressedBody := decompressIfNeeded(responseBody, contentEncoding)
+
+			statusCode := recorderStatusCode
+			if overrideStatusCode > 0 {
+				statusCode = overrideStatusCode
+			}
+
+			finalize(statusCode, respHeaders, decompressedBody, len(responseBody))
+		}
+
+		cancelDone := make(chan struct{})
+		go func() {
+			select {
+			case <-r.Context().Done():
+				// Preserve already-captured stream bytes while keeping 499 semantics.
+				finalizeFromRecorder(499)
+			case <-cancelDone:
+			}
+		}()
+
 		proxy.ServeHTTP(recorder, r)
 		close(cancelDone)
 		if r.Context().Err() != nil {
+			finalizeFromRecorder(499)
 			return
 		}
 
-		// Track TTFT (time from request start to first response byte)
-		if !recorder.firstWriteTime.IsZero() {
-			req.TTFT = recorder.firstWriteTime.Sub(startTime)
-		}
-
-		// Get Content-Encoding from response headers
-		contentEncoding := recorder.Header().Get("Content-Encoding")
-
-		// Copy response headers
-		respHeaders := make(map[string][]string)
-		for k, v := range recorder.Header() {
-			respHeaders[k] = v
-		}
-
-		// Decompress if needed for storage (we still pass compressed data to client)
-		responseBody := recorder.body.Bytes()
-		decompressedBody := decompressIfNeeded(responseBody, contentEncoding)
-
-		finalize(recorder.statusCode, respHeaders, decompressedBody, len(responseBody))
+		finalizeFromRecorder(0)
 	}
 }
 
