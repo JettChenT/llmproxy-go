@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -952,6 +953,80 @@ func TestAnthropicStreamingProxyIntegration(t *testing.T) {
 	}
 	if captured.OutputTokens != 5 {
 		t.Errorf("OutputTokens = %d, want 5", captured.OutputTokens)
+	}
+}
+
+func TestStreamingCancellationPreservesCapturedBody(t *testing.T) {
+	resetTestState()
+
+	// Mock streaming backend that sends one chunk with tool call arguments,
+	// then stalls so the client context can time out.
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("ResponseWriter does not support Flusher")
+		}
+
+		fmt.Fprint(w, "data: {\"id\":\"chatcmpl-timeout\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_timeout\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"NYC\\\"}\"}}]},\"finish_reason\":null}] }\n\n")
+		flusher.Flush()
+
+		// Keep connection open long enough for the downstream client timeout.
+		time.Sleep(400 * time.Millisecond)
+	}))
+	defer mockServer.Close()
+
+	port := getFreePort(t)
+	listenAddr := fmt.Sprintf(":%d", port)
+	if err := StartProxyInstance("test-stream-cancel-capture", listenAddr, mockServer.URL); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	reqBody := []byte(`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hello"}]}`)
+	proxyURL := fmt.Sprintf("http://localhost:%d/v1/chat/completions", port)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		time.Sleep(120 * time.Millisecond)
+		cancel()
+	}()
+
+	httpReq, _ := http.NewRequestWithContext(ctx, "POST", proxyURL, bytes.NewReader(reqBody))
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err == nil {
+		if resp == nil || resp.Body == nil {
+			t.Fatal("expected streaming response body")
+		}
+		_, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr == nil {
+			t.Fatal("expected stream read error after client cancellation")
+		}
+	}
+
+	captured := waitForRequest(t, 1, 2*time.Second)
+
+	if captured.StatusCode != 499 {
+		t.Errorf("StatusCode = %d, want 499", captured.StatusCode)
+	}
+	if captured.Status != StatusError {
+		t.Errorf("Status = %v, want StatusError", captured.Status)
+	}
+	if len(captured.ResponseBody) == 0 {
+		t.Fatal("expected captured response body to contain partial SSE data")
+	}
+	bodyStr := string(captured.ResponseBody)
+	if !strings.Contains(bodyStr, "\"name\":\"get_weather\"") {
+		t.Errorf("captured body missing tool call name: %q", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "\\\"city\\\":\\\"NYC\\\"") {
+		t.Errorf("captured body missing tool call arguments: %q", bodyStr)
 	}
 }
 

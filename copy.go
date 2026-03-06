@@ -170,5 +170,123 @@ func outputCopyText(req *LLMRequest) (string, string, error) {
 		}
 		return "", "output", fmt.Errorf("no output body")
 	}
+
+	if text := extractLLMOutputText(req); text != "" {
+		return text, "output", nil
+	}
+
 	return rawBodyCopyText(req.ResponseBody, "output")
+}
+
+func extractLLMOutputText(req *LLMRequest) string {
+	if req == nil || len(req.ResponseBody) == 0 {
+		return ""
+	}
+
+	if isAnthropicEndpoint(req.Path) {
+		return extractAnthropicOutputText(req.ResponseBody)
+	}
+	return extractOpenAIOutputText(req.ResponseBody)
+}
+
+func extractOpenAIOutputText(responseBody []byte) string {
+	var resp OpenAIResponse
+	if err := json.Unmarshal(responseBody, &resp); err != nil {
+		if isSSEData(responseBody) {
+			if assembled := reassembleSSEResponse(responseBody); assembled != nil {
+				resp = *assembled
+			} else {
+				return ""
+			}
+		} else {
+			return ""
+		}
+	}
+
+	var parts []string
+	for _, choice := range resp.Choices {
+		choiceText := renderOpenAIChoiceCopyText(choice)
+		if choiceText == "" {
+			continue
+		}
+		if len(resp.Choices) > 1 {
+			choiceText = fmt.Sprintf("Choice %d:\n%s", choice.Index, choiceText)
+		}
+		parts = append(parts, choiceText)
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+}
+
+func renderOpenAIChoiceCopyText(choice OpenAIChoice) string {
+	var parts []string
+
+	if content := normalizeCopiedOutputText(extractOpenAITextContent(choice.Message.Content)); content != "" {
+		parts = append(parts, content)
+	}
+	if reasoning := normalizeCopiedOutputText(choice.Message.ReasoningContent); reasoning != "" {
+		parts = append(parts, reasoning)
+	}
+	if len(choice.Message.ToolCalls) > 0 {
+		toolCallsJSON, err := json.MarshalIndent(choice.Message.ToolCalls, "", "  ")
+		if err == nil {
+			parts = append(parts, string(toolCallsJSON))
+		}
+	}
+
+	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+}
+
+func normalizeCopiedOutputText(text string) string {
+	text = sanitizeForTerminal(text)
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(line, " \t")
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func extractAnthropicOutputText(responseBody []byte) string {
+	var resp AnthropicResponse
+	if err := json.Unmarshal(responseBody, &resp); err != nil {
+		return ""
+	}
+
+	var parts []string
+	var toolUses []ToolCall
+	for _, block := range resp.Content {
+		switch block.Type {
+		case "text":
+			if text := normalizeCopiedOutputText(block.Text); text != "" {
+				parts = append(parts, text)
+			}
+		case "thinking":
+			if thinking := normalizeCopiedOutputText(block.Thinking); thinking != "" {
+				parts = append(parts, thinking)
+			}
+		case "tool_use":
+			inputJSON, _ := json.Marshal(block.Input)
+			toolUses = append(toolUses, ToolCall{
+				ID:   block.ID,
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      block.Name,
+					Arguments: string(inputJSON),
+				},
+			})
+		}
+	}
+
+	if len(toolUses) > 0 {
+		toolCallsJSON, err := json.MarshalIndent(toolUses, "", "  ")
+		if err == nil {
+			parts = append(parts, string(toolCallsJSON))
+		}
+	}
+
+	return strings.TrimSpace(strings.Join(parts, "\n\n"))
 }
