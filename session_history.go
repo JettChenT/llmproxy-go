@@ -50,6 +50,7 @@ type SessionHistoryRequest struct {
 	OutputTokens          int                 `json:"output_tokens"`
 	ProviderID            string              `json:"provider_id,omitempty"`
 	Cost                  float64             `json:"cost"`
+	CancelReason          string              `json:"cancel_reason,omitempty"`
 }
 
 // SessionHistorySnapshot is the persisted shape used by llmproxy-go inspect.
@@ -227,6 +228,7 @@ func toSessionHistoryRequest(req *LLMRequest) SessionHistoryRequest {
 		OutputTokens:          req.OutputTokens,
 		ProviderID:            req.ProviderID,
 		Cost:                  req.Cost,
+		CancelReason:          req.CancelReason,
 	}
 }
 

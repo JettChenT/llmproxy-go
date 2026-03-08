@@ -312,6 +312,36 @@ func createProxyHandler(proxyName, listenAddr string, target *url.URL, proxy *ht
 			tapeWriter.WriteRequestStart(req)
 		}
 
+		buildCancelReason := func(elapsed time.Duration, respBytes int, ttft time.Duration, streaming bool) string {
+			var parts []string
+
+			// Timing context
+			if elapsed < 1*time.Second {
+				parts = append(parts, fmt.Sprintf("client disconnected after %s (likely immediate cancel or abort)", formatDuration(elapsed)))
+			} else if elapsed >= 30*time.Second {
+				parts = append(parts, fmt.Sprintf("client disconnected after %s (likely client-side timeout)", formatDuration(elapsed)))
+			} else {
+				parts = append(parts, fmt.Sprintf("client disconnected after %s", formatDuration(elapsed)))
+			}
+
+			// Streaming state
+			if streaming {
+				if ttft > 0 && respBytes > 0 {
+					parts = append(parts, fmt.Sprintf("stream was active: TTFT %s, %s received", formatDuration(ttft), formatBytes(respBytes)))
+				} else if respBytes == 0 {
+					parts = append(parts, "no response data received yet (client may have timed out waiting for first token)")
+				}
+			} else {
+				if respBytes == 0 {
+					parts = append(parts, "no response received (upstream had not replied yet)")
+				} else {
+					parts = append(parts, fmt.Sprintf("%s received before disconnect", formatBytes(respBytes)))
+				}
+			}
+
+			return strings.Join(parts, "; ")
+		}
+
 		var finalizeOnce sync.Once
 		finalize := func(statusCode int, respHeaders map[string][]string, responseBody []byte, responseSize int) {
 			finalizeOnce.Do(func() {
@@ -464,6 +494,16 @@ func createProxyHandler(proxyName, listenAddr string, target *url.URL, proxy *ht
 			statusCode := recorderStatusCode
 			if overrideStatusCode > 0 {
 				statusCode = overrideStatusCode
+			}
+
+			// Build diagnostics for client disconnects (499)
+			if statusCode == 499 {
+				elapsed := time.Since(startTime)
+				var ttft time.Duration
+				if !firstWriteTime.IsZero() {
+					ttft = firstWriteTime.Sub(startTime)
+				}
+				req.CancelReason = buildCancelReason(elapsed, len(responseBody), ttft, isStreaming)
 			}
 
 			finalize(statusCode, respHeaders, decompressedBody, len(responseBody))

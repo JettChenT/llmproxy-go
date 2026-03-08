@@ -4,3 +4,4 @@ llmproxy-go
 dist/
 .env
 config/*.toml
+.DS_Store

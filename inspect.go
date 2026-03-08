@@ -188,6 +188,9 @@ func renderRequestDetail(out io.Writer, snapshot *SessionHistorySnapshot, req Se
 	if req.Cost > 0 {
 		fmt.Fprintf(out, "Cost:      %s\n", formatCost(req.Cost))
 	}
+	if req.CancelReason != "" {
+		fmt.Fprintf(out, "Cancel:    %s\n", req.CancelReason)
+	}
 	if req.ProxyName != "" {
 		fmt.Fprintf(out, "Proxy:     %s (%s)\n", req.ProxyName, req.ProxyListen)
 	}

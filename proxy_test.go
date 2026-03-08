@@ -1028,6 +1028,9 @@ func TestStreamingCancellationPreservesCapturedBody(t *testing.T) {
 	if !strings.Contains(bodyStr, "\\\"city\\\":\\\"NYC\\\"") {
 		t.Errorf("captured body missing tool call arguments: %q", bodyStr)
 	}
+	if captured.CancelReason == "" {
+		t.Error("expected CancelReason to be populated for 499")
+	}
 }
 
 // --- Image Tests ---

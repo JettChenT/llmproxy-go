@@ -676,8 +676,13 @@ func (m *model) renderRequestRow(req *LLMRequest, selected bool) string {
 			statusStyle = completeStyle
 		}
 	case StatusError:
-		statusText = "✗  ERROR"
-		statusStyle = errorStyle
+		if req.StatusCode == 499 {
+			statusText = "✗  CANCELED"
+			statusStyle = lipgloss.NewStyle().Foreground(warningColor)
+		} else {
+			statusText = "✗  ERROR"
+			statusStyle = errorStyle
+		}
 	}
 	statusStr := statusStyle.Render(fmt.Sprintf("%-*s", cols.status, statusText))
 
@@ -877,7 +882,18 @@ func (m model) renderDetailView() string {
 		headerParts = append(headerParts, "  ", costInfo)
 	}
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Center, headerParts...))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+
+	// Show cancel reason banner for 499 errors
+	if m.selected.StatusCode == 499 && m.selected.CancelReason != "" {
+		cancelBanner := lipgloss.NewStyle().
+			Foreground(warningColor).
+			Italic(true).
+			Render("⚠ 499 Client Closed: " + m.selected.CancelReason)
+		b.WriteString(cancelBanner)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
 
 	// Tabs
 	tabs := []string{"Messages", "Output", "Raw Input", "Raw Output"}

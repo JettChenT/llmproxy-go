@@ -44,6 +44,9 @@ type LLMRequest struct {
 	// Cache tracking
 	CachedResponse bool // True if this response came from cache
 
+	// Client disconnect diagnostics (499)
+	CancelReason string // Human-readable reason for client disconnect
+
 	// Multi-proxy tracking
 	ProxyName   string // Name of the proxy instance that handled this request
 	ProxyListen string // Listen address of the proxy instance
