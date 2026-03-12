@@ -1435,3 +1435,214 @@ func TestAnthropicProxyWithThinking(t *testing.T) {
 		t.Errorf("Expected StatusComplete, got %v", req.Status)
 	}
 }
+
+func TestReassembleAnthropicSSEResponse_Basic(t *testing.T) {
+	sseData := []byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_01XYZ","type":"message","role":"assistant","model":"claude-opus-4-6","stop_sequence":null,"usage":{"input_tokens":25,"output_tokens":1},"content":[],"stop_reason":null}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: ping
+data: {"type":"ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world!"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":15}}
+
+event: message_stop
+data: {"type":"message_stop"}
+`)
+
+	resp := reassembleAnthropicSSEResponse(sseData)
+	if resp == nil {
+		t.Fatal("reassembleAnthropicSSEResponse returned nil")
+	}
+
+	if resp.ID != "msg_01XYZ" {
+		t.Errorf("Expected ID 'msg_01XYZ', got %q", resp.ID)
+	}
+	if resp.Model != "claude-opus-4-6" {
+		t.Errorf("Expected model 'claude-opus-4-6', got %q", resp.Model)
+	}
+	if resp.Role != "assistant" {
+		t.Errorf("Expected role 'assistant', got %q", resp.Role)
+	}
+	if resp.StopReason != "end_turn" {
+		t.Errorf("Expected stop_reason 'end_turn', got %q", resp.StopReason)
+	}
+	if resp.Usage.InputTokens != 25 {
+		t.Errorf("Expected input_tokens 25, got %d", resp.Usage.InputTokens)
+	}
+	if resp.Usage.OutputTokens != 15 {
+		t.Errorf("Expected output_tokens 15, got %d", resp.Usage.OutputTokens)
+	}
+	if len(resp.Content) != 1 {
+		t.Fatalf("Expected 1 content block, got %d", len(resp.Content))
+	}
+	if resp.Content[0].Type != "text" {
+		t.Errorf("Expected content type 'text', got %q", resp.Content[0].Type)
+	}
+	if resp.Content[0].Text != "Hello world!" {
+		t.Errorf("Expected text 'Hello world!', got %q", resp.Content[0].Text)
+	}
+}
+
+func TestReassembleAnthropicSSEResponse_ToolUse(t *testing.T) {
+	sseData := []byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_tool","type":"message","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":100,"output_tokens":2},"content":[],"stop_reason":null}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me check the weather."}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01ABC","name":"get_weather","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"location\":"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":" \"San Francisco, CA\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":89}}
+
+event: message_stop
+data: {"type":"message_stop"}
+`)
+
+	resp := reassembleAnthropicSSEResponse(sseData)
+	if resp == nil {
+		t.Fatal("reassembleAnthropicSSEResponse returned nil")
+	}
+
+	if len(resp.Content) != 2 {
+		t.Fatalf("Expected 2 content blocks, got %d", len(resp.Content))
+	}
+
+	if resp.Content[0].Type != "text" {
+		t.Errorf("Expected first block type 'text', got %q", resp.Content[0].Type)
+	}
+	if resp.Content[0].Text != "Let me check the weather." {
+		t.Errorf("Expected text content, got %q", resp.Content[0].Text)
+	}
+
+	if resp.Content[1].Type != "tool_use" {
+		t.Errorf("Expected second block type 'tool_use', got %q", resp.Content[1].Type)
+	}
+	if resp.Content[1].ID != "toolu_01ABC" {
+		t.Errorf("Expected tool ID 'toolu_01ABC', got %q", resp.Content[1].ID)
+	}
+	if resp.Content[1].Name != "get_weather" {
+		t.Errorf("Expected tool name 'get_weather', got %q", resp.Content[1].Name)
+	}
+
+	// Check the parsed input
+	inputMap, ok := resp.Content[1].Input.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected Input to be map, got %T", resp.Content[1].Input)
+	}
+	if inputMap["location"] != "San Francisco, CA" {
+		t.Errorf("Expected location 'San Francisco, CA', got %v", inputMap["location"])
+	}
+
+	if resp.StopReason != "tool_use" {
+		t.Errorf("Expected stop_reason 'tool_use', got %q", resp.StopReason)
+	}
+}
+
+func TestReassembleAnthropicSSEResponse_Thinking(t *testing.T) {
+	sseData := []byte(`event: message_start
+data: {"type":"message_start","message":{"id":"msg_think","type":"message","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":50,"output_tokens":1},"content":[],"stop_reason":null}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me think about this..."}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" The answer is 42."}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EqQBCgIYAhIM..."}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"The answer is 42."}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":100}}
+
+event: message_stop
+data: {"type":"message_stop"}
+`)
+
+	resp := reassembleAnthropicSSEResponse(sseData)
+	if resp == nil {
+		t.Fatal("reassembleAnthropicSSEResponse returned nil")
+	}
+
+	if len(resp.Content) != 2 {
+		t.Fatalf("Expected 2 content blocks, got %d", len(resp.Content))
+	}
+
+	// Thinking block
+	if resp.Content[0].Type != "thinking" {
+		t.Errorf("Expected first block type 'thinking', got %q", resp.Content[0].Type)
+	}
+	if resp.Content[0].Thinking != "Let me think about this... The answer is 42." {
+		t.Errorf("Expected accumulated thinking, got %q", resp.Content[0].Thinking)
+	}
+	if resp.Content[0].Signature != "EqQBCgIYAhIM..." {
+		t.Errorf("Expected signature 'EqQBCgIYAhIM...', got %q", resp.Content[0].Signature)
+	}
+
+	// Text block
+	if resp.Content[1].Type != "text" {
+		t.Errorf("Expected second block type 'text', got %q", resp.Content[1].Type)
+	}
+	if resp.Content[1].Text != "The answer is 42." {
+		t.Errorf("Expected text 'The answer is 42.', got %q", resp.Content[1].Text)
+	}
+}
+
+func TestReassembleAnthropicSSEResponse_Empty(t *testing.T) {
+	resp := reassembleAnthropicSSEResponse([]byte(""))
+	if resp != nil {
+		t.Error("Expected nil for empty data")
+	}
+
+	resp = reassembleAnthropicSSEResponse([]byte("not sse data"))
+	if resp != nil {
+		t.Error("Expected nil for non-SSE data")
+	}
+}

@@ -121,6 +121,7 @@ func extractStreamingResponsePreviewSnippet(responseBody []byte) string {
 	}
 
 	if isSSEData(responseBody) {
+		// Try OpenAI SSE format
 		if assembled := reassembleSSEResponse(responseBody); assembled != nil {
 			for _, choice := range assembled.Choices {
 				if snippet := normalizePreviewSnippet(extractOpenAITextContent(choice.Message.Content)); snippet != "" {
@@ -128,6 +129,22 @@ func extractStreamingResponsePreviewSnippet(responseBody []byte) string {
 				}
 				if snippet := normalizePreviewSnippet(choice.Message.ReasoningContent); snippet != "" {
 					return snippet
+				}
+			}
+		}
+
+		// Try Anthropic SSE format
+		if assembled := reassembleAnthropicSSEResponse(responseBody); assembled != nil {
+			for _, block := range assembled.Content {
+				if block.Type == "text" {
+					if snippet := normalizePreviewSnippet(block.Text); snippet != "" {
+						return snippet
+					}
+				}
+				if block.Type == "thinking" {
+					if snippet := normalizePreviewSnippet(block.Thinking); snippet != "" {
+						return snippet
+					}
 				}
 			}
 		}

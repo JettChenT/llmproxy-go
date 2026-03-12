@@ -70,18 +70,23 @@ func (m *model) extractSearchableText(req *LLMRequest) string {
 	if len(req.ResponseBody) > 0 {
 		if isAnthropicEndpoint(req.Path) {
 			var anthropicResp AnthropicResponse
-			if err := json.Unmarshal(req.ResponseBody, &anthropicResp); err == nil {
-				for _, block := range anthropicResp.Content {
-					if block.Type == "text" {
-						sb.WriteString(block.Text)
-						sb.WriteString(" ")
-					} else if block.Type == "thinking" {
+			if err := json.Unmarshal(req.ResponseBody, &anthropicResp); err != nil {
+				if isSSEData(req.ResponseBody) {
+					if assembled := reassembleAnthropicSSEResponse(req.ResponseBody); assembled != nil {
+						anthropicResp = *assembled
+					}
+				}
+			}
+			for _, block := range anthropicResp.Content {
+				if block.Type == "text" {
+					sb.WriteString(block.Text)
+					sb.WriteString(" ")
+				} else if block.Type == "thinking" {
 					sb.WriteString(block.Thinking)
 					sb.WriteString(" ")
 				} else if block.Type == "tool_use" {
-						sb.WriteString(block.Name)
-						sb.WriteString(" ")
-					}
+					sb.WriteString(block.Name)
+					sb.WriteString(" ")
 				}
 			}
 		} else {

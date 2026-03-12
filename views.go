@@ -1915,7 +1915,22 @@ func (m *model) renderAnthropicOutputTab() string {
 
 	var resp AnthropicResponse
 	if err := json.Unmarshal(m.selected.ResponseBody, &resp); err != nil {
-		return renderJSONBody(m.selected.ResponseBody, "Response")
+		// Try reassembling Anthropic SSE streaming events
+		if isSSEData(m.selected.ResponseBody) {
+			if assembled := reassembleAnthropicSSEResponse(m.selected.ResponseBody); assembled != nil {
+				if assembled.Usage.InputTokens == 0 && m.selected.InputTokens > 0 {
+					assembled.Usage.InputTokens = m.selected.InputTokens
+				}
+				if assembled.Usage.OutputTokens == 0 && m.selected.OutputTokens > 0 {
+					assembled.Usage.OutputTokens = m.selected.OutputTokens
+				}
+				resp = *assembled
+			} else {
+				return renderJSONBody(m.selected.ResponseBody, "Response")
+			}
+		} else {
+			return renderJSONBody(m.selected.ResponseBody, "Response")
+		}
 	}
 
 	var b strings.Builder

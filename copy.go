@@ -253,7 +253,15 @@ func normalizeCopiedOutputText(text string) string {
 func extractAnthropicOutputText(responseBody []byte) string {
 	var resp AnthropicResponse
 	if err := json.Unmarshal(responseBody, &resp); err != nil {
-		return ""
+		if isSSEData(responseBody) {
+			if assembled := reassembleAnthropicSSEResponse(responseBody); assembled != nil {
+				resp = *assembled
+			} else {
+				return ""
+			}
+		} else {
+			return ""
+		}
 	}
 
 	var parts []string

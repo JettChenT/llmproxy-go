@@ -448,8 +448,12 @@ func createProxyHandler(proxyName, listenAddr string, target *url.URL, proxy *ht
 			lastLiveBytes = len(responseBody)
 			liveUpdateMu.Unlock()
 
+			// Decompress for display/parsing during live streaming
+			contentEncoding := recorder.Header().Get("Content-Encoding")
+			displayBody := decompressIfNeeded(responseBody, contentEncoding)
+
 			req.StatusCode = statusCode
-			req.ResponseBody = responseBody
+			req.ResponseBody = displayBody
 			req.ResponseSize = len(responseBody)
 			if !firstWriteTime.IsZero() {
 				req.TTFT = firstWriteTime.Sub(startTime)
@@ -857,4 +861,168 @@ func extractTokenUsageFromSSE(req *LLMRequest, data []byte) (providerCost float6
 		}
 	}
 	return providerCost
+}
+
+// reassembleAnthropicSSEResponse reconstructs an AnthropicResponse from Anthropic SSE streaming events.
+// It accumulates text, thinking, and tool_use content blocks from the event stream.
+func reassembleAnthropicSSEResponse(data []byte) *AnthropicResponse {
+	lines := strings.Split(string(data), "\n")
+
+	resp := &AnthropicResponse{}
+	// Track content blocks by index
+	type contentBlockState struct {
+		blockType string
+		text      strings.Builder
+		thinking  strings.Builder
+		signature string
+		toolID    string
+		toolName  string
+		toolInput strings.Builder // accumulated partial JSON
+	}
+	blocks := make(map[int]*contentBlockState)
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data: ") && !strings.HasPrefix(line, "data:") {
+			continue
+		}
+
+		jsonData := strings.TrimPrefix(line, "data: ")
+		jsonData = strings.TrimPrefix(jsonData, "data:")
+		jsonData = strings.TrimSpace(jsonData)
+		if jsonData == "" || jsonData == "[DONE]" {
+			continue
+		}
+
+		var event struct {
+			Type    string `json:"type"`
+			Index   int    `json:"index"`
+			Message struct {
+				ID    string `json:"id"`
+				Model string `json:"model"`
+				Role  string `json:"role"`
+				Usage struct {
+					InputTokens  int `json:"input_tokens"`
+					OutputTokens int `json:"output_tokens"`
+				} `json:"usage"`
+			} `json:"message"`
+			ContentBlock struct {
+				Type  string `json:"type"`
+				Text  string `json:"text"`
+				ID    string `json:"id"`
+				Name  string `json:"name"`
+				Input any    `json:"input"`
+			} `json:"content_block"`
+			Delta struct {
+				Type         string `json:"type"`
+				Text         string `json:"text"`
+				Thinking     string `json:"thinking"`
+				Signature    string `json:"signature"`
+				PartialJSON  string `json:"partial_json"`
+				StopReason   string `json:"stop_reason"`
+				StopSequence string `json:"stop_sequence"`
+			} `json:"delta"`
+			Usage struct {
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+		}
+
+		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
+			continue
+		}
+
+		switch event.Type {
+		case "message_start":
+			resp.ID = event.Message.ID
+			resp.Model = event.Message.Model
+			resp.Role = event.Message.Role
+			resp.Type = "message"
+			resp.Usage.InputTokens = event.Message.Usage.InputTokens
+			resp.Usage.OutputTokens = event.Message.Usage.OutputTokens
+
+		case "content_block_start":
+			bs := &contentBlockState{blockType: event.ContentBlock.Type}
+			if event.ContentBlock.Type == "text" {
+				bs.text.WriteString(event.ContentBlock.Text)
+			} else if event.ContentBlock.Type == "tool_use" {
+				bs.toolID = event.ContentBlock.ID
+				bs.toolName = event.ContentBlock.Name
+			}
+			blocks[event.Index] = bs
+
+		case "content_block_delta":
+			bs, ok := blocks[event.Index]
+			if !ok {
+				continue
+			}
+			switch event.Delta.Type {
+			case "text_delta":
+				bs.text.WriteString(event.Delta.Text)
+			case "thinking_delta":
+				bs.thinking.WriteString(event.Delta.Thinking)
+			case "signature_delta":
+				bs.signature = event.Delta.Signature
+			case "input_json_delta":
+				bs.toolInput.WriteString(event.Delta.PartialJSON)
+			}
+
+		case "message_delta":
+			resp.StopReason = event.Delta.StopReason
+			if event.Usage.OutputTokens > 0 {
+				resp.Usage.OutputTokens = event.Usage.OutputTokens
+			}
+		}
+	}
+
+	if len(blocks) == 0 {
+		return nil
+	}
+
+	// Build content blocks in index order
+	maxIdx := -1
+	for idx := range blocks {
+		if idx > maxIdx {
+			maxIdx = idx
+		}
+	}
+
+	for i := 0; i <= maxIdx; i++ {
+		bs, ok := blocks[i]
+		if !ok {
+			continue
+		}
+		switch bs.blockType {
+		case "text":
+			resp.Content = append(resp.Content, AnthropicContentBlock{
+				Type: "text",
+				Text: bs.text.String(),
+			})
+		case "thinking":
+			resp.Content = append(resp.Content, AnthropicContentBlock{
+				Type:      "thinking",
+				Thinking:  bs.thinking.String(),
+				Signature: bs.signature,
+			})
+		case "redacted_thinking":
+			resp.Content = append(resp.Content, AnthropicContentBlock{
+				Type: "redacted_thinking",
+			})
+		case "tool_use":
+			var input any
+			inputStr := bs.toolInput.String()
+			if inputStr != "" {
+				if err := json.Unmarshal([]byte(inputStr), &input); err != nil {
+					input = inputStr // fallback to raw string
+				}
+			}
+			resp.Content = append(resp.Content, AnthropicContentBlock{
+				Type:  "tool_use",
+				ID:    bs.toolID,
+				Name:  bs.toolName,
+				Input: input,
+			})
+		}
+	}
+
+	return resp
 }
