@@ -648,6 +648,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.showDetail {
 				m.jumpToAdjacentRequest(-1)
 			}
+
+		case "e":
+			// Export chat transcript to temp folder and copy path to clipboard
+			if m.showDetail {
+				m.exportChat()
+			}
 		}
 
 	case tea.MouseMsg:

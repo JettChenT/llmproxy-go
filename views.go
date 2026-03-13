@@ -918,11 +918,11 @@ func (m model) renderDetailView() string {
 	// Footer - show context-sensitive help
 	var help string
 	if m.activeTab == TabMessages {
-		help = helpStyle.Render("1-4/tab • J/K req • n/N msg • c/C collapse • click [Image] • g/G top/end • ↑/↓ scroll • esc back")
+		help = helpStyle.Render("1-4/tab • J/K req • n/N msg • c/C collapse • click [Image] • e export • g/G top/end • ↑/↓ scroll • esc back")
 	} else if m.activeTab == TabOutput {
-		help = helpStyle.Render("1-4/tab • J/K req • n/N msg • c copy • y copy both • g/G top/end • ↑/↓ scroll • esc back")
+		help = helpStyle.Render("1-4/tab • J/K req • n/N msg • c copy • y copy both • e export • g/G top/end • ↑/↓ scroll • esc back")
 	} else {
-		help = helpStyle.Render("1-4/tab • J/K req • c copy • y copy both • g/G top/end • ↑/↓ scroll • M select • esc/q back")
+		help = helpStyle.Render("1-4/tab • J/K req • c copy • y copy both • e export • g/G top/end • ↑/↓ scroll • M select • esc/q back")
 	}
 
 	// Mouse mode indicator for detail view
