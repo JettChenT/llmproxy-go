@@ -394,7 +394,7 @@ func exportImageToFile(url string, isBase64 bool, exportDir string, counter *int
 		}
 
 		return &ExportImageRef{
-			Filename: filename,
+			Filename: filePath,
 			MimeType: mimeType,
 		}
 	}
