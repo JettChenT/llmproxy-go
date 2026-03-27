@@ -11,9 +11,10 @@ import (
 
 // ProxyConfig represents configuration for a single proxy instance
 type ProxyConfig struct {
-	Name   string `toml:"name"`   // Human-readable name for this proxy
-	Listen string `toml:"listen"` // Address to listen on (e.g., ":8080")
-	Target string `toml:"target"` // Target URL to proxy to
+	Name     string   `toml:"name"`      // Human-readable name for this proxy
+	Listen   string   `toml:"listen"`    // Address to listen on (e.g., ":8080")
+	Target   string   `toml:"target"`    // Target URL to proxy to
+	LLMPaths []string `toml:"llm_paths"` // Extra path substrings to treat as LLM endpoints
 }
 
 // CacheConfigTOML represents cache configuration in TOML format
@@ -150,6 +151,12 @@ target = "https://api.anthropic.com"
 name = "local-llm"
 listen = ":8082"
 target = "http://localhost:11434"
+
+# Extra path substrings to detect as LLM endpoints (optional).
+# By default the proxy recognizes standard paths like /v1/messages and
+# /v1/chat/completions. Use llm_paths when proxying through a gateway
+# that uses custom paths (e.g. a platform proxy).
+# llm_paths = ["/proxy/anthropic/", "/proxy/openrouter"]
 
 # Cache configuration
 [cache]

@@ -261,6 +261,9 @@ func runWithConfig(configPath string) {
 		}()
 	}
 
+	// Register extra LLM path patterns from config
+	RegisterExtraLLMPaths(config.Proxies)
+
 	// Start all proxy instances
 	if err := StartMultipleProxies(config.Proxies); err != nil {
 		fmt.Fprintf(os.Stderr, "Error starting proxies: %v\n", err)

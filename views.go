@@ -993,6 +993,10 @@ func (m *model) renderMessagesTab() string {
 		return m.renderAnthropicMessagesTab()
 	}
 
+	if isGeminiEndpoint(m.selected.Path) {
+		return m.renderGeminiMessagesTab()
+	}
+
 	var req OpenAIRequest
 	if err := json.Unmarshal(m.selected.RequestBody, &req); err != nil {
 		return errorStyle.Render(fmt.Sprintf("Failed to parse request: %v", err))
@@ -1300,6 +1304,10 @@ func (m *model) renderOutputTab() string {
 
 	if isAnthropicEndpoint(m.selected.Path) {
 		return m.renderAnthropicOutputTab()
+	}
+
+	if isGeminiEndpoint(m.selected.Path) {
+		return m.renderGeminiOutputTab()
 	}
 
 	var resp OpenAIResponse
@@ -2011,6 +2019,320 @@ func (m *model) renderAnthropicMessagesTab() string {
 	return b.String()
 }
 
+func (m *model) renderGeminiMessagesTab() string {
+	var req struct {
+		Contents []struct {
+			Role  string `json:"role"`
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"contents"`
+		Model             string  `json:"model"`
+		GenerationConfig  struct {
+			Temperature float64 `json:"temperature"`
+			MaxTokens   int     `json:"maxOutputTokens"`
+		} `json:"generationConfig"`
+		SystemInstruction *struct {
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"systemInstruction"`
+	}
+
+	if err := json.Unmarshal(m.selected.RequestBody, &req); err != nil {
+		return errorStyle.Render(fmt.Sprintf("Failed to parse request: %v", err))
+	}
+
+	var b strings.Builder
+	contentWidth := m.width - 10
+	textWidth := contentWidth - 6
+
+	// Request metadata
+	metaBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(accentColor).
+		Padding(0, 2).
+		MarginBottom(1).
+		MaxWidth(contentWidth)
+
+	meta := fmt.Sprintf("%s %s\n%s %s\n%s %s\n%s %.1f\n%s %d\n%s %v",
+		labelStyle.Render("Model:"), req.Model,
+		labelStyle.Render("Endpoint:"), m.selected.Path,
+		labelStyle.Render("Input Tokens:"), formatMessagesInputTokenCount(m.selected),
+		labelStyle.Render("Temperature:"), req.GenerationConfig.Temperature,
+		labelStyle.Render("Max Tokens:"), req.GenerationConfig.MaxTokens,
+		labelStyle.Render("Stream:"), m.selected.IsStreaming,
+	)
+	b.WriteString(metaBox.Render(meta))
+	b.WriteString("\n\n")
+
+	// System instruction
+	if req.SystemInstruction != nil {
+		for _, p := range req.SystemInstruction.Parts {
+			if p.Text != "" {
+				sysBox := lipgloss.NewStyle().
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(lipgloss.Color("5")).
+					Padding(0, 2).
+					MarginBottom(1).
+					MaxWidth(contentWidth)
+				header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5")).Render("SYSTEM")
+				b.WriteString(sysBox.Render(header + "\n\n" + wrapText(p.Text, textWidth)))
+				b.WriteString("\n")
+			}
+		}
+	}
+
+	b.WriteString(labelStyle.Render("═══ Messages ═══"))
+	b.WriteString("\n\n")
+
+	// Render contents (messages)
+	for _, msg := range req.Contents {
+		role := strings.ToUpper(msg.Role)
+		var roleColor lipgloss.Color
+		var roleIcon string
+		if msg.Role == "user" {
+			roleColor = lipgloss.Color("3")
+			roleIcon = "👤"
+		} else {
+			roleColor = lipgloss.Color("2")
+			roleIcon = "🤖"
+		}
+
+		msgBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(roleColor).
+			Padding(0, 2).
+			MarginBottom(1).
+			MaxWidth(contentWidth)
+
+		header := lipgloss.NewStyle().Bold(true).Foreground(roleColor).Render(roleIcon + " " + role)
+		var content string
+		for _, p := range msg.Parts {
+			if p.Text != "" {
+				content += wrapText(p.Text, textWidth)
+			}
+		}
+		if content != "" {
+			b.WriteString(msgBox.Render(header + "\n\n" + content))
+		} else {
+			b.WriteString(msgBox.Render(header))
+		}
+		b.WriteString("\n")
+	}
+
+	// Response
+	if len(m.selected.ResponseBody) > 0 {
+		var geminiResp struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						Text    string `json:"text"`
+						Thought bool   `json:"thought"`
+					} `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+		}
+
+		effectiveBody := m.selected.ResponseBody
+		if isSSEData(m.selected.ResponseBody) {
+			if decoded := reassembleGeminiSSE(m.selected.ResponseBody); decoded != nil {
+				effectiveBody = decoded
+			}
+		}
+
+		if json.Unmarshal(effectiveBody, &geminiResp) == nil {
+			for _, c := range geminiResp.Candidates {
+				for _, p := range c.Content.Parts {
+					if p.Text == "" {
+						continue
+					}
+					roleColor := lipgloss.Color("2")
+					label := "🤖 MODEL"
+					if p.Thought {
+						roleColor = lipgloss.Color("13")
+						label = "💭 THINKING"
+					}
+					msgBox := lipgloss.NewStyle().
+						Border(lipgloss.RoundedBorder()).
+						BorderForeground(roleColor).
+						Padding(0, 2).
+						MarginBottom(1).
+						MaxWidth(contentWidth)
+					header := lipgloss.NewStyle().Bold(true).Foreground(roleColor).Render(label)
+					b.WriteString(msgBox.Render(header + "\n\n" + wrapText(p.Text, textWidth)))
+					b.WriteString("\n")
+				}
+			}
+		}
+	}
+
+	return b.String()
+}
+
+func (m *model) renderGeminiOutputTab() string {
+	if len(m.selected.ResponseBody) == 0 {
+		if m.selected.Status == StatusPending {
+			return pendingStyle.Render("⏳ Waiting for response...")
+		}
+		return contentStyle.Render("No response body")
+	}
+
+	var resp struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text             string `json:"text"`
+					Thought          bool   `json:"thought"`
+					ThoughtSignature string `json:"thoughtSignature"`
+				} `json:"parts"`
+				Role string `json:"role"`
+			} `json:"content"`
+			FinishReason string `json:"finishReason"`
+		} `json:"candidates"`
+		UsageMetadata struct {
+			PromptTokenCount     int `json:"promptTokenCount"`
+			CandidatesTokenCount int `json:"candidatesTokenCount"`
+			TotalTokenCount      int `json:"totalTokenCount"`
+			ThoughtsTokenCount   int `json:"thoughtsTokenCount"`
+		} `json:"usageMetadata"`
+		ModelVersion string `json:"modelVersion"`
+	}
+
+	effectiveBody := m.selected.ResponseBody
+	// Handle Gemini SSE streaming
+	if isSSEData(m.selected.ResponseBody) {
+		if decoded := reassembleGeminiSSE(m.selected.ResponseBody); decoded != nil {
+			effectiveBody = decoded
+		}
+	}
+
+	if err := json.Unmarshal(effectiveBody, &resp); err != nil {
+		return renderJSONBody(m.selected.ResponseBody, "Response")
+	}
+
+	var b strings.Builder
+	contentWidth := m.width - 10
+	textWidth := contentWidth - 6
+
+	// Response metadata
+	metaBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(successColor).
+		Padding(0, 2).
+		MarginBottom(1).
+		MaxWidth(contentWidth)
+
+	meta := fmt.Sprintf("Model: %s\nPrompt Tokens: %d\nCandidate Tokens: %d\nTotal Tokens: %d",
+		resp.ModelVersion,
+		resp.UsageMetadata.PromptTokenCount,
+		resp.UsageMetadata.CandidatesTokenCount,
+		resp.UsageMetadata.TotalTokenCount,
+	)
+	if resp.UsageMetadata.ThoughtsTokenCount > 0 {
+		meta += fmt.Sprintf("\nThoughts Tokens: %d", resp.UsageMetadata.ThoughtsTokenCount)
+	}
+	if m.selected.Cost > 0 {
+		meta += fmt.Sprintf("\nCost: $%.4f", m.selected.Cost)
+	}
+	b.WriteString(metaBox.Render(meta))
+	b.WriteString("\n\n")
+
+	// Candidates
+	for i, candidate := range resp.Candidates {
+		b.WriteString(labelStyle.Render(fmt.Sprintf("═══ Candidate %d (finish: %s) ═══", i, candidate.FinishReason)))
+		b.WriteString("\n\n")
+
+		for _, part := range candidate.Content.Parts {
+			if part.Thought {
+				thinkBox := lipgloss.NewStyle().
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(lipgloss.Color("13")).
+					Padding(0, 2).
+					MarginBottom(1).
+					MaxWidth(contentWidth)
+				b.WriteString(thinkBox.Render(wrapText(part.Text, textWidth)))
+				b.WriteString("\n")
+			} else if part.Text != "" {
+				textBox := lipgloss.NewStyle().
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(successColor).
+					Padding(0, 2).
+					MarginBottom(1).
+					MaxWidth(contentWidth)
+				b.WriteString(textBox.Render(wrapText(part.Text, textWidth)))
+				b.WriteString("\n")
+			}
+		}
+	}
+
+	return b.String()
+}
+
+// reassembleGeminiSSE reassembles Gemini SSE streaming chunks into a single JSON response.
+func reassembleGeminiSSE(data []byte) []byte {
+	lines := strings.Split(string(data), "\n")
+
+	var lastChunk json.RawMessage
+	var allText strings.Builder
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data: ") && !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		jsonData := strings.TrimPrefix(line, "data: ")
+		jsonData = strings.TrimPrefix(jsonData, "data:")
+		jsonData = strings.TrimSpace(jsonData)
+		if jsonData == "" || jsonData == "[DONE]" {
+			continue
+		}
+
+		var chunk struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						Text string `json:"text"`
+					} `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+		}
+		if json.Unmarshal([]byte(jsonData), &chunk) == nil {
+			for _, c := range chunk.Candidates {
+				for _, p := range c.Content.Parts {
+					allText.WriteString(p.Text)
+				}
+			}
+		}
+		lastChunk = json.RawMessage(jsonData)
+	}
+
+	if lastChunk == nil {
+		return nil
+	}
+
+	// Use the last chunk (which has final usageMetadata) but replace the text with accumulated text
+	var final map[string]interface{}
+	if json.Unmarshal(lastChunk, &final) != nil {
+		return nil
+	}
+
+	// Replace candidate text with accumulated text
+	if candidates, ok := final["candidates"].([]interface{}); ok && len(candidates) > 0 {
+		if candidate, ok := candidates[0].(map[string]interface{}); ok {
+			if content, ok := candidate["content"].(map[string]interface{}); ok {
+				content["parts"] = []map[string]interface{}{{"text": allText.String()}}
+			}
+		}
+	}
+
+	result, err := json.Marshal(final)
+	if err != nil {
+		return nil
+	}
+	return result
+}
+
 func (m *model) renderAnthropicOutputTab() string {
 	if len(m.selected.ResponseBody) == 0 {
 		if m.selected.Status == StatusPending {
@@ -2021,19 +2343,15 @@ func (m *model) renderAnthropicOutputTab() string {
 
 	var resp AnthropicResponse
 	if err := json.Unmarshal(m.selected.ResponseBody, &resp); err != nil {
-		// Try reassembling Anthropic SSE streaming events
-		if isSSEData(m.selected.ResponseBody) {
-			if assembled := reassembleAnthropicSSEResponse(m.selected.ResponseBody); assembled != nil {
-				if assembled.Usage.InputTokens == 0 && m.selected.InputTokens > 0 {
-					assembled.Usage.InputTokens = m.selected.InputTokens
-				}
-				if assembled.Usage.OutputTokens == 0 && m.selected.OutputTokens > 0 {
-					assembled.Usage.OutputTokens = m.selected.OutputTokens
-				}
-				resp = *assembled
-			} else {
-				return renderJSONBody(m.selected.ResponseBody, "Response")
+		// Try reassembling Anthropic SSE or Bedrock binary streaming events
+		if assembled := reassembleAnthropicSSEResponse(m.selected.ResponseBody); assembled != nil {
+			if assembled.Usage.InputTokens == 0 && m.selected.InputTokens > 0 {
+				assembled.Usage.InputTokens = m.selected.InputTokens
 			}
+			if assembled.Usage.OutputTokens == 0 && m.selected.OutputTokens > 0 {
+				assembled.Usage.OutputTokens = m.selected.OutputTokens
+			}
+			resp = *assembled
 		} else {
 			return renderJSONBody(m.selected.ResponseBody, "Response")
 		}

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -91,6 +92,17 @@ func (r *responseRecorder) Flush() {
 	}
 }
 
+// extraLLMPaths holds additional path substrings configured via llm_paths in TOML.
+// Populated by RegisterExtraLLMPaths before proxies start.
+var extraLLMPaths []string
+
+// RegisterExtraLLMPaths collects llm_paths from all proxy configs into the global set.
+func RegisterExtraLLMPaths(proxies []ProxyConfig) {
+	for _, p := range proxies {
+		extraLLMPaths = append(extraLLMPaths, p.LLMPaths...)
+	}
+}
+
 func isLLMEndpoint(path string) bool {
 	llmPaths := []string{
 		"/v1/chat/completions",
@@ -105,12 +117,30 @@ func isLLMEndpoint(path string) bool {
 			return true
 		}
 	}
+	for _, p := range extraLLMPaths {
+		if strings.Contains(path, p) {
+			return true
+		}
+	}
 	return false
 }
 
+// isGeminiEndpoint returns true if the path is a Google Gemini API endpoint
+func isGeminiEndpoint(path string) bool {
+	return strings.Contains(path, "/proxy/google/") || strings.Contains(path, "generativelanguage.googleapis.com")
+}
+
 // isAnthropicEndpoint returns true if the path is an Anthropic Messages API endpoint
+// (including Bedrock, which uses the same request/response format)
 func isAnthropicEndpoint(path string) bool {
-	return strings.HasSuffix(path, "/v1/messages")
+	if strings.HasSuffix(path, "/v1/messages") {
+		return true
+	}
+	// Platform proxy paths for Anthropic and Bedrock both use Anthropic format
+	if strings.Contains(path, "/proxy/anthropic/") || strings.Contains(path, "/proxy/bedrock/") {
+		return true
+	}
+	return false
 }
 
 // shouldSkipCache checks if the request has headers indicating caching should be skipped.
@@ -565,9 +595,19 @@ func extractTokenUsage(req *LLMRequest, responseBody []byte) {
 
 	// Check for SSE data (streaming response)
 	// SSE streams may start with comment lines (": comment"), event lines, or data lines
-	trimmed := strings.TrimSpace(string(responseBody))
-	if strings.HasPrefix(trimmed, "event:") || strings.HasPrefix(trimmed, "data:") || strings.HasPrefix(trimmed, ":") {
-		providerCost := extractTokenUsageFromSSE(req, responseBody)
+	sseData := responseBody
+	isSSE := isSSEData(responseBody)
+
+	// If not standard SSE, check for AWS Bedrock binary event stream
+	if !isSSE && isBedrockEventStream(responseBody) {
+		if decoded := decodeBedrockEventStream(responseBody); decoded != nil {
+			sseData = decoded
+			isSSE = true
+		}
+	}
+
+	if isSSE {
+		providerCost := extractTokenUsageFromSSE(req, sseData)
 		if providerCost > 0 {
 			// Prefer provider-reported cost (e.g., OpenRouter)
 			req.Cost = providerCost
@@ -584,7 +624,7 @@ func extractTokenUsage(req *LLMRequest, responseBody []byte) {
 		return
 	}
 
-	// Try to parse response with usage field (supports both OpenAI and Anthropic formats)
+	// Try to parse response with usage field (supports OpenAI, Anthropic, and Gemini formats)
 	var resp struct {
 		Usage struct {
 			PromptTokens     int     `json:"prompt_tokens"`
@@ -594,6 +634,12 @@ func extractTokenUsage(req *LLMRequest, responseBody []byte) {
 			OutputTokens     int     `json:"output_tokens"`
 			Cost             float64 `json:"cost"`
 		} `json:"usage"`
+		// Gemini format
+		UsageMetadata struct {
+			PromptTokenCount     int `json:"promptTokenCount"`
+			CandidatesTokenCount int `json:"candidatesTokenCount"`
+			TotalTokenCount      int `json:"totalTokenCount"`
+		} `json:"usageMetadata"`
 	}
 
 	if err := json.Unmarshal(responseBody, &resp); err != nil {
@@ -610,6 +656,14 @@ func extractTokenUsage(req *LLMRequest, responseBody []byte) {
 	}
 	if req.OutputTokens == 0 && resp.Usage.OutputTokens > 0 {
 		req.OutputTokens = resp.Usage.OutputTokens
+	}
+
+	// Gemini format fallback (usageMetadata)
+	if req.InputTokens == 0 && resp.UsageMetadata.PromptTokenCount > 0 {
+		req.InputTokens = resp.UsageMetadata.PromptTokenCount
+	}
+	if req.OutputTokens == 0 && resp.UsageMetadata.CandidatesTokenCount > 0 {
+		req.OutputTokens = resp.UsageMetadata.CandidatesTokenCount
 	}
 
 	// Calculate cost: prefer provider-reported cost, fallback to model DB lookup
@@ -825,6 +879,54 @@ func isSSEData(data []byte) bool {
 	return strings.HasPrefix(trimmed, "event:") || strings.HasPrefix(trimmed, "data:") || strings.HasPrefix(trimmed, ":")
 }
 
+// isBedrockEventStream returns true if the data appears to be an AWS binary event stream
+// containing base64-encoded Anthropic events in {"bytes":"..."} payloads.
+func isBedrockEventStream(data []byte) bool {
+	return bytes.Contains(data, []byte(`"bytes"`))
+}
+
+// decodeBedrockEventStream extracts Anthropic SSE events from an AWS binary event stream.
+// It finds all {"bytes":"<base64>"} payloads, decodes them, and returns reconstructed
+// SSE data that the existing Anthropic parsers can handle.
+func decodeBedrockEventStream(data []byte) []byte {
+	var sseLines []string
+	// Scan for JSON objects containing "bytes" field
+	raw := string(data)
+	searchFrom := 0
+	for {
+		idx := strings.Index(raw[searchFrom:], `"bytes":"`)
+		if idx < 0 {
+			break
+		}
+		idx += searchFrom + len(`"bytes":"`)
+		// Find the closing quote
+		end := strings.Index(raw[idx:], `"`)
+		if end < 0 {
+			break
+		}
+		b64 := raw[idx : idx+end]
+		searchFrom = idx + end + 1
+		if b64 == "" {
+			continue
+		}
+		decoded, err := base64Decode(b64)
+		if err != nil {
+			continue
+		}
+		// The decoded payload is an Anthropic event JSON like {"type":"message_start",...}
+		sseLines = append(sseLines, "data: "+string(decoded))
+	}
+	if len(sseLines) == 0 {
+		return nil
+	}
+	return []byte(strings.Join(sseLines, "\n"))
+}
+
+// base64Decode decodes a standard base64 string.
+func base64Decode(s string) ([]byte, error) {
+	return base64.StdEncoding.DecodeString(s)
+}
+
 // extractTokenUsageFromSSE parses SSE events to extract token usage from streaming responses.
 // Handles both Anthropic SSE (message_start/message_delta events) and OpenAI SSE (usage in data chunks).
 // Returns the provider-reported cost if present in the usage data (e.g., OpenRouter).
@@ -859,6 +961,11 @@ func extractTokenUsageFromSSE(req *LLMRequest, data []byte) (providerCost float6
 				OutputTokens     int     `json:"output_tokens"`
 				Cost             float64 `json:"cost"`
 			} `json:"usage"`
+			// Gemini format
+			UsageMetadata struct {
+				PromptTokenCount     int `json:"promptTokenCount"`
+				CandidatesTokenCount int `json:"candidatesTokenCount"`
+			} `json:"usageMetadata"`
 		}
 
 		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
@@ -883,6 +990,14 @@ func extractTokenUsageFromSSE(req *LLMRequest, data []byte) (providerCost float6
 			req.OutputTokens = event.Usage.CompletionTokens
 		}
 
+		// Gemini: usageMetadata in each SSE chunk (last chunk has final counts)
+		if event.UsageMetadata.PromptTokenCount > 0 {
+			req.InputTokens = event.UsageMetadata.PromptTokenCount
+		}
+		if event.UsageMetadata.CandidatesTokenCount > 0 {
+			req.OutputTokens = event.UsageMetadata.CandidatesTokenCount
+		}
+
 		// Provider-reported cost (e.g., OpenRouter includes cost in usage)
 		if event.Usage.Cost > 0 {
 			providerCost = event.Usage.Cost
@@ -893,7 +1008,14 @@ func extractTokenUsageFromSSE(req *LLMRequest, data []byte) (providerCost float6
 
 // reassembleAnthropicSSEResponse reconstructs an AnthropicResponse from Anthropic SSE streaming events.
 // It accumulates text, thinking, and tool_use content blocks from the event stream.
+// Also handles AWS Bedrock binary event streams by decoding them first.
 func reassembleAnthropicSSEResponse(data []byte) *AnthropicResponse {
+	// If this is a Bedrock binary event stream, decode it to SSE first
+	if !isSSEData(data) && isBedrockEventStream(data) {
+		if decoded := decodeBedrockEventStream(data); decoded != nil {
+			data = decoded
+		}
+	}
 	lines := strings.Split(string(data), "\n")
 
 	resp := &AnthropicResponse{}

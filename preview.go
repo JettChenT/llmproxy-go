@@ -15,7 +15,7 @@ func (m *model) getRequestPreviewSnippet(req *LLMRequest) string {
 	if req == nil {
 		return ""
 	}
-	if req.IsStreaming && len(req.ResponseBody) > 0 {
+	if len(req.ResponseBody) > 0 {
 		if snippet := extractStreamingResponsePreviewSnippet(req.ResponseBody); snippet != "" {
 			return snippet
 		}
@@ -39,6 +39,9 @@ func extractRequestPreviewSnippet(path string, requestBody []byte) string {
 	if isAnthropicEndpoint(path) {
 		return extractAnthropicRequestPreviewSnippet(requestBody)
 	}
+	if isGeminiEndpoint(path) {
+		return extractGeminiRequestPreviewSnippet(requestBody)
+	}
 	return extractOpenAIRequestPreviewSnippet(requestBody)
 }
 
@@ -58,6 +61,31 @@ func extractAnthropicRequestPreviewSnippet(requestBody []byte) string {
 		}
 	}
 
+	return ""
+}
+
+func extractGeminiRequestPreviewSnippet(requestBody []byte) string {
+	var req struct {
+		Contents []struct {
+			Role  string `json:"role"`
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"contents"`
+	}
+	if err := json.Unmarshal(requestBody, &req); err != nil {
+		return ""
+	}
+	// Show last user message as preview
+	for i := len(req.Contents) - 1; i >= 0; i-- {
+		if req.Contents[i].Role == "user" {
+			for _, p := range req.Contents[i].Parts {
+				if snippet := normalizePreviewSnippet(p.Text); snippet != "" {
+					return snippet
+				}
+			}
+		}
+	}
 	return ""
 }
 
@@ -120,6 +148,22 @@ func extractStreamingResponsePreviewSnippet(responseBody []byte) string {
 		return ""
 	}
 
+	// Try Anthropic SSE/Bedrock format first (reassemble handles Bedrock decoding internally)
+	if assembled := reassembleAnthropicSSEResponse(responseBody); assembled != nil {
+		for _, block := range assembled.Content {
+			if block.Type == "text" {
+				if snippet := normalizePreviewSnippet(block.Text); snippet != "" {
+					return snippet
+				}
+			}
+			if block.Type == "thinking" {
+				if snippet := normalizePreviewSnippet(block.Thinking); snippet != "" {
+					return snippet
+				}
+			}
+		}
+	}
+
 	if isSSEData(responseBody) {
 		// Try OpenAI SSE format
 		if assembled := reassembleSSEResponse(responseBody); assembled != nil {
@@ -129,22 +173,6 @@ func extractStreamingResponsePreviewSnippet(responseBody []byte) string {
 				}
 				if snippet := normalizePreviewSnippet(choice.Message.ReasoningContent); snippet != "" {
 					return snippet
-				}
-			}
-		}
-
-		// Try Anthropic SSE format
-		if assembled := reassembleAnthropicSSEResponse(responseBody); assembled != nil {
-			for _, block := range assembled.Content {
-				if block.Type == "text" {
-					if snippet := normalizePreviewSnippet(block.Text); snippet != "" {
-						return snippet
-					}
-				}
-				if block.Type == "thinking" {
-					if snippet := normalizePreviewSnippet(block.Thinking); snippet != "" {
-						return snippet
-					}
 				}
 			}
 		}
@@ -178,6 +206,26 @@ func extractStreamingResponsePreviewSnippet(responseBody []byte) string {
 	if err := json.Unmarshal(responseBody, &anthropicResp); err == nil {
 		if snippet := normalizePreviewSnippet(extractAnthropicTextContent(anthropicResp.Content)); snippet != "" {
 			return snippet
+		}
+	}
+
+	// Gemini format: candidates[].content.parts[].text
+	var geminiResp struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal(responseBody, &geminiResp); err == nil {
+		for _, c := range geminiResp.Candidates {
+			for _, p := range c.Content.Parts {
+				if snippet := normalizePreviewSnippet(p.Text); snippet != "" {
+					return snippet
+				}
+			}
 		}
 	}
 
