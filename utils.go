@@ -15,6 +15,10 @@ import (
 	"github.com/muesli/reflow/wordwrap"
 )
 
+// maxRenderContentLen is the maximum content length (in bytes) before truncation
+// to prevent expensive rendering (glamour, chroma) from freezing the TUI.
+const maxRenderContentLen = 100_000
+
 // Cached markdown renderers by width
 var markdownRenderers = make(map[int]*glamour.TermRenderer)
 
@@ -63,25 +67,42 @@ func renderMarkdown(content string, width int) string {
 		return ""
 	}
 
+	totalLen := len(content)
+	content, truncated := truncateLargeContent(content)
+
 	// Sanitize content first
 	content = sanitizeForTerminal(content)
 
 	renderer := getMarkdownRenderer(width)
 	if renderer == nil {
 		// Fall back to plain text wrapping if renderer fails
-		return wrapText(content, width)
+		result := wrapText(content, width)
+		if truncated {
+			result += renderTruncationNotice(totalLen)
+		}
+		return result
 	}
 
 	rendered, err := renderer.Render(content)
 	if err != nil {
 		// Fall back to plain text wrapping on error
-		return wrapText(content, width)
+		result := wrapText(content, width)
+		if truncated {
+			result += renderTruncationNotice(totalLen)
+		}
+		return result
 	}
 
 	result := strings.TrimSpace(rendered)
 	// If glamour stripped image placeholders, bypass it and use plain text
 	if strings.Contains(content, "{IMG_PLACEHOLDER_") && !strings.Contains(result, "{IMG_PLACEHOLDER_") {
+		if truncated {
+			return content + renderTruncationNotice(totalLen)
+		}
 		return content
+	}
+	if truncated {
+		result += renderTruncationNotice(totalLen)
 	}
 	return result
 }
@@ -210,6 +231,9 @@ func highlightJSON(s string) string {
 
 // highlightXMLWithWidth applies syntax highlighting and wraps to the given width
 func highlightXMLWithWidth(s string, width int) string {
+	totalLen := len(s)
+	s, truncated := truncateLargeContent(s)
+
 	// First sanitize the input
 	s = sanitizeForTerminal(s)
 
@@ -233,12 +257,18 @@ func highlightXMLWithWidth(s string, width int) string {
 
 	iterator, err := lexer.Tokenise(nil, s)
 	if err != nil {
+		if truncated {
+			return s + renderTruncationNotice(totalLen)
+		}
 		return s
 	}
 
 	var buf strings.Builder
 	err = formatter.Format(&buf, style, iterator)
 	if err != nil {
+		if truncated {
+			return s + renderTruncationNotice(totalLen)
+		}
 		return s
 	}
 
@@ -249,6 +279,9 @@ func highlightXMLWithWidth(s string, width int) string {
 		result = wordwrap.String(result, width)
 	}
 
+	if truncated {
+		result += renderTruncationNotice(totalLen)
+	}
 	return result
 }
 
@@ -338,6 +371,29 @@ func containsXMLContent(s string) bool {
 	return hasOpenTag && hasAngleBrackets
 }
 
+// truncateLargeContent truncates content that exceeds maxRenderContentLen and
+// appends a notice. This prevents glamour/chroma from blocking the TUI on huge messages.
+func truncateLargeContent(content string) (string, bool) {
+	if len(content) <= maxRenderContentLen {
+		return content, false
+	}
+	// Find a newline near the limit to avoid cutting mid-line
+	cutPoint := maxRenderContentLen
+	if idx := strings.LastIndex(content[:cutPoint], "\n"); idx > cutPoint*3/4 {
+		cutPoint = idx
+	}
+	return content[:cutPoint], true
+}
+
+// renderTruncationNotice returns a styled notice for truncated content.
+func renderTruncationNotice(totalLen int) string {
+	return lipgloss.NewStyle().
+		Foreground(warningColor).
+		Bold(true).
+		Render(fmt.Sprintf("\n\n--- Content truncated (%s total) — view Raw tab for full body ---",
+			formatBytes(totalLen)))
+}
+
 // renderContentSmart formats content intelligently based on type
 // If content contains XML, it highlights it; otherwise uses markdown
 func renderContentSmart(content string, width int) string {
@@ -345,6 +401,10 @@ func renderContentSmart(content string, width int) string {
 		return ""
 	}
 
+	totalLen := len(content)
+	content, truncated := truncateLargeContent(content)
+
+	var result string
 	// Check if content has significant XML structure
 	if containsXMLContent(content) {
 		// Apply syntax highlighting to make XML tags visible
@@ -352,11 +412,16 @@ func renderContentSmart(content string, width int) string {
 		if shouldPrettifyXML(content) {
 			content = formatXMLContent(content)
 		}
-		return highlightXMLWithWidth(content, width)
+		result = highlightXMLWithWidth(content, width)
+	} else {
+		// Default to markdown rendering
+		result = renderMarkdown(content, width)
 	}
 
-	// Default to markdown rendering
-	return renderMarkdown(content, width)
+	if truncated {
+		result += renderTruncationNotice(totalLen)
+	}
+	return result
 }
 
 // shouldPrettifyXML checks if XML content would benefit from reformatting
@@ -371,6 +436,9 @@ func shouldPrettifyXML(s string) bool {
 
 // highlightJSONWithWidth applies syntax highlighting and wraps to the given width
 func highlightJSONWithWidth(s string, width int) string {
+	totalLen := len(s)
+	s, truncated := truncateLargeContent(s)
+
 	// First sanitize the input
 	s = sanitizeForTerminal(s)
 
@@ -394,12 +462,18 @@ func highlightJSONWithWidth(s string, width int) string {
 
 	iterator, err := lexer.Tokenise(nil, s)
 	if err != nil {
+		if truncated {
+			return s + renderTruncationNotice(totalLen)
+		}
 		return s
 	}
 
 	var buf strings.Builder
 	err = formatter.Format(&buf, style, iterator)
 	if err != nil {
+		if truncated {
+			return s + renderTruncationNotice(totalLen)
+		}
 		return s
 	}
 
@@ -410,5 +484,8 @@ func highlightJSONWithWidth(s string, width int) string {
 		result = wordwrap.String(result, width)
 	}
 
+	if truncated {
+		result += renderTruncationNotice(totalLen)
+	}
 	return result
 }

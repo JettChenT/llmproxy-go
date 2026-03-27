@@ -21,6 +21,7 @@ type ExportMessage struct {
 	ToolCalls    []ToolCall        `json:"tool_calls,omitempty"`
 	ToolCallID   string            `json:"tool_call_id,omitempty"`
 	Images       []ExportImageRef  `json:"images,omitempty"`
+	Audio        []ExportAudioRef  `json:"audio,omitempty"`
 	IsResponse   bool              `json:"is_response"`
 	Model        string            `json:"model,omitempty"`
 	Endpoint     string            `json:"endpoint,omitempty"`
@@ -33,6 +34,14 @@ type ExportMessage struct {
 type ExportImageRef struct {
 	Filename string `json:"filename"`
 	MimeType string `json:"mime_type"`
+}
+
+// ExportAudioRef references an exported audio file
+type ExportAudioRef struct {
+	Filename   string `json:"filename"`
+	MimeType   string `json:"mime_type"`
+	Format     string `json:"format"`
+	Transcript string `json:"transcript,omitempty"`
 }
 
 // exportChat exports the selected request's chat transcript to a temporary folder
@@ -154,6 +163,13 @@ func extractOpenAIExportMessages(req *LLMRequest, exportDir string, imageCounter
 							em.Images = append(em.Images, *imgRef)
 						}
 					}
+				} else if blockType == "input_audio" {
+					if data, format, ok := extractInputAudioData(blockMap); ok {
+						audioRef := exportAudioToFile(data, format, "", exportDir, &imageCounter)
+						if audioRef != nil {
+							em.Audio = append(em.Audio, *audioRef)
+						}
+					}
 				}
 			}
 		}
@@ -164,7 +180,7 @@ func extractOpenAIExportMessages(req *LLMRequest, exportDir string, imageCounter
 	return messages, imageCounter
 }
 
-func extractOpenAIResponseExportMessages(req *LLMRequest, _ string, imageCounter int) ([]ExportMessage, int) {
+func extractOpenAIResponseExportMessages(req *LLMRequest, exportDir string, imageCounter int) ([]ExportMessage, int) {
 	responseBody := req.ResponseBody
 	var resp OpenAIResponse
 	if err := json.Unmarshal(responseBody, &resp); err != nil {
@@ -198,6 +214,21 @@ func extractOpenAIResponseExportMessages(req *LLMRequest, _ string, imageCounter
 		// Include reasoning content if present
 		if choice.Message.ReasoningContent != "" {
 			em.Content = "<reasoning>\n" + choice.Message.ReasoningContent + "\n</reasoning>\n\n" + em.Content
+		}
+
+		// Include audio output if present
+		if choice.Message.Audio != nil && choice.Message.Audio.Data != "" {
+			format := choice.Message.Audio.Format
+			if format == "" {
+				format = "wav"
+			}
+			audioRef := exportAudioToFile(choice.Message.Audio.Data, format, choice.Message.Audio.Transcript, exportDir, &imageCounter)
+			if audioRef != nil {
+				em.Audio = append(em.Audio, *audioRef)
+			}
+			if choice.Message.Audio.Transcript != "" && em.Content == "" {
+				em.Content = choice.Message.Audio.Transcript
+			}
 		}
 
 		messages = append(messages, em)
@@ -276,6 +307,13 @@ func extractAnthropicExportMessages(req *LLMRequest, exportDir string, imageCoun
 						imgRef := exportImageToFile(url, isBase64, exportDir, &imageCounter)
 						if imgRef != nil {
 							em.Images = append(em.Images, *imgRef)
+						}
+					}
+				case "input_audio":
+					if data, format, ok := extractInputAudioData(blockMap); ok {
+						audioRef := exportAudioToFile(data, format, "", exportDir, &imageCounter)
+						if audioRef != nil {
+							em.Audio = append(em.Audio, *audioRef)
 						}
 					}
 				case "tool_use":
@@ -403,6 +441,31 @@ func exportImageToFile(url string, isBase64 bool, exportDir string, counter *int
 	return &ExportImageRef{
 		Filename: url,
 		MimeType: "image/url",
+	}
+}
+
+// exportAudioToFile saves audio data to the export directory and returns a reference
+func exportAudioToFile(data string, format string, transcript string, exportDir string, counter *int) *ExportAudioRef {
+	*counter++
+	idx := *counter
+
+	decoded, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return nil
+	}
+
+	ext := getAudioExtension(format)
+	filename := fmt.Sprintf("audio_%d%s", idx, ext)
+	filePath := filepath.Join(exportDir, filename)
+	if err := os.WriteFile(filePath, decoded, 0644); err != nil {
+		return nil
+	}
+
+	return &ExportAudioRef{
+		Filename:   filePath,
+		MimeType:   getAudioMimeType(format),
+		Format:     format,
+		Transcript: transcript,
 	}
 }
 

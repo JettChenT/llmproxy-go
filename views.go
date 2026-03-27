@@ -1004,9 +1004,11 @@ func (m *model) renderMessagesTab() string {
 	// Content width for boxes (viewport width minus border/padding)
 	contentWidth := m.width - 10
 
-	// Reset image references - we'll collect them as we render
+	// Reset image/audio references - we'll collect them as we render
 	m.imageRefs = nil
+	m.audioRefs = nil
 	imageCounter := 0
+	audioCounter := 0
 
 	// Request metadata
 	metaBox := lipgloss.NewStyle().
@@ -1121,6 +1123,17 @@ func (m *model) renderMessagesTab() string {
 							}
 							// Use a plain text placeholder - will be styled after sanitization
 							parts = append(parts, fmt.Sprintf("{IMG_PLACEHOLDER_%d}", imageCounter))
+						} else if t == "input_audio" {
+							// Extract audio data and create a clickable reference
+							audioCounter++
+							if data, format, ok := extractInputAudioData(p); ok {
+								m.audioRefs = append(m.audioRefs, AudioRef{
+									Index:  audioCounter,
+									Data:   data,
+									Format: format,
+								})
+							}
+							parts = append(parts, fmt.Sprintf("{AUDIO_PLACEHOLDER_%d}", audioCounter))
 						}
 					}
 				}
@@ -1146,10 +1159,14 @@ func (m *model) renderMessagesTab() string {
 		if m.collapsedMessages[i] {
 			// Collapsed view - just show header with content preview
 			preview := content
-			// Replace image placeholders with simple text for preview
+			// Replace image/audio placeholders with simple text for preview
 			for _, img := range m.imageRefs {
 				placeholder := fmt.Sprintf("{IMG_PLACEHOLDER_%d}", img.Index)
 				preview = strings.Replace(preview, placeholder, fmt.Sprintf("[Image %d]", img.Index), 1)
+			}
+			for _, audio := range m.audioRefs {
+				placeholder := fmt.Sprintf("{AUDIO_PLACEHOLDER_%d}", audio.Index)
+				preview = strings.Replace(preview, placeholder, fmt.Sprintf("[Audio %d]", audio.Index), 1)
 			}
 			if len(preview) > 60 {
 				preview = preview[:57] + "..."
@@ -1176,7 +1193,7 @@ func (m *model) renderMessagesTab() string {
 				Padding(0, 2).
 				Width(contentWidth)
 
-			renderedContent := m.replaceImagePlaceholders(renderContentSmart(content, textWidth))
+			renderedContent := m.replaceAudioPlaceholders(m.replaceImagePlaceholders(renderContentSmart(content, textWidth)))
 
 			// Build reasoning block if present
 			reasoningBlock := ""
@@ -1254,6 +1271,25 @@ func (m *model) replaceImagePlaceholders(content string) string {
 	return content
 }
 
+// replaceAudioPlaceholders replaces {AUDIO_PLACEHOLDER_N} with styled clickable audio links
+func (m *model) replaceAudioPlaceholders(content string) string {
+	for _, audio := range m.audioRefs {
+		placeholder := fmt.Sprintf("{AUDIO_PLACEHOLDER_%d}", audio.Index)
+		audioZoneID := fmt.Sprintf("audio-%d", audio.Index)
+		audioStyle := lipgloss.NewStyle().
+			Foreground(accentColor).
+			Bold(true).
+			Underline(true)
+		label := fmt.Sprintf("[Audio %d - %s]", audio.Index, audio.Format)
+		if audio.Transcript != "" {
+			label = fmt.Sprintf("[Audio %d - %s] %s", audio.Index, audio.Format, audio.Transcript)
+		}
+		styledPlaceholder := zone.Mark(audioZoneID, audioStyle.Render(label))
+		content = strings.Replace(content, placeholder, styledPlaceholder, 1)
+	}
+	return content
+}
+
 func (m *model) renderOutputTab() string {
 	if len(m.selected.ResponseBody) == 0 {
 		if m.selected.Status == StatusPending {
@@ -1290,8 +1326,29 @@ func (m *model) renderOutputTab() string {
 		}
 	}
 
+	// Try to extract audio output format from request body
+	audioOutputFormat := "wav"
+	if len(m.selected.RequestBody) > 0 {
+		var reqBody struct {
+			Audio *struct {
+				Format string `json:"format"`
+			} `json:"audio"`
+		}
+		if json.Unmarshal(m.selected.RequestBody, &reqBody) == nil && reqBody.Audio != nil && reqBody.Audio.Format != "" {
+			audioOutputFormat = reqBody.Audio.Format
+		}
+	}
+	// Set format on response audio objects that don't have it
+	for i := range resp.Choices {
+		if resp.Choices[i].Message.Audio != nil && resp.Choices[i].Message.Audio.Format == "" {
+			resp.Choices[i].Message.Audio.Format = audioOutputFormat
+		}
+	}
+
 	var b strings.Builder
 	lineCount := 0
+	audioCounter := 0
+	m.audioRefs = nil
 
 	// Content width for boxes (viewport width minus border/padding)
 	contentWidth := m.width - 10
@@ -1395,13 +1452,46 @@ func (m *model) renderOutputTab() string {
 			reasoningBlock = reasoningInnerBox.Render(reasoningLabel+"\n\n"+renderMarkdown(reasoningText, textWidth-6)) + "\n\n"
 		}
 
+		// Build audio block if present
+		audioBlock := ""
+		if choice.Message.Audio != nil && choice.Message.Audio.Data != "" {
+			audioCounter++
+			audioFormat := choice.Message.Audio.Format
+			if audioFormat == "" {
+				audioFormat = "wav"
+			}
+			m.audioRefs = append(m.audioRefs, AudioRef{
+				Index:      audioCounter,
+				Data:       choice.Message.Audio.Data,
+				Format:     audioFormat,
+				Transcript: choice.Message.Audio.Transcript,
+				IsOutput:   true,
+			})
+			audioZoneID := fmt.Sprintf("audio-%d", audioCounter)
+			audioStyle := lipgloss.NewStyle().
+				Foreground(accentColor).
+				Bold(true).
+				Underline(true)
+			audioLink := zone.Mark(audioZoneID, audioStyle.Render(fmt.Sprintf("[Play Audio %d - %s]", audioCounter, audioFormat)))
+			transcriptText := ""
+			if choice.Message.Audio.Transcript != "" {
+				transcriptText = "\n\n" + renderMarkdown(sanitizeForTerminal(choice.Message.Audio.Transcript), textWidth)
+			}
+			audioInnerBox := lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(accentColor).
+				Padding(0, 2).
+				Width(textWidth)
+			audioBlock = audioInnerBox.Render("🔊 AUDIO OUTPUT\n\n"+audioLink+transcriptText) + "\n\n"
+		}
+
 		var msgContent string
 		hasToolCalls := len(choice.Message.ToolCalls) > 0
 
 		if hasToolCalls {
 			// Tool call response
 			msgContent = roleStyled + "\n\n"
-			msgContent += reasoningBlock
+			msgContent += reasoningBlock + audioBlock
 			if content != "" && content != "null" && content != "\"\"" {
 				msgContent += renderMarkdown(content, textWidth) + "\n\n"
 			}
@@ -1409,7 +1499,7 @@ func (m *model) renderOutputTab() string {
 			msgContent += "\n\n" + finishInfo
 		} else {
 			// Regular text response
-			msgContent = roleStyled + "\n\n" + reasoningBlock + renderMarkdown(content, textWidth) + "\n\n" + finishInfo
+			msgContent = roleStyled + "\n\n" + reasoningBlock + audioBlock + renderMarkdown(content, textWidth) + "\n\n" + finishInfo
 		}
 
 		rendered := msgBox.Render(msgContent)
@@ -1669,6 +1759,7 @@ func (m *model) renderAnthropicMessagesTab() string {
 	contentWidth := m.width - 10
 	textWidth := contentWidth - 6
 	m.imageRefs = nil
+	m.audioRefs = nil
 
 	// Request metadata
 	metaBox := lipgloss.NewStyle().
@@ -1711,6 +1802,7 @@ func (m *model) renderAnthropicMessagesTab() string {
 	}
 	var msgs []displayMsg
 	imageCounter := 0
+	audioCounter := 0
 
 	if req.System != nil {
 		msgs = append(msgs, displayMsg{
@@ -1757,6 +1849,16 @@ func (m *model) renderAnthropicMessagesTab() string {
 						})
 					}
 					parts = append(parts, fmt.Sprintf("{IMG_PLACEHOLDER_%d}", imageCounter))
+				case "input_audio":
+					audioCounter++
+					if data, format, ok := extractInputAudioData(bl); ok {
+						m.audioRefs = append(m.audioRefs, AudioRef{
+							Index:  audioCounter,
+							Data:   data,
+							Format: format,
+						})
+					}
+					parts = append(parts, fmt.Sprintf("{AUDIO_PLACEHOLDER_%d}", audioCounter))
 				case "tool_result":
 					switch rc := bl["content"].(type) {
 					case string:
@@ -1847,10 +1949,14 @@ func (m *model) renderAnthropicMessagesTab() string {
 
 		if m.collapsedMessages[i] {
 			preview := content
-			// Replace image placeholders with simple text for preview
+			// Replace image/audio placeholders with simple text for preview
 			for _, img := range m.imageRefs {
 				placeholder := fmt.Sprintf("{IMG_PLACEHOLDER_%d}", img.Index)
 				preview = strings.Replace(preview, placeholder, fmt.Sprintf("[Image %d]", img.Index), 1)
+			}
+			for _, audio := range m.audioRefs {
+				placeholder := fmt.Sprintf("{AUDIO_PLACEHOLDER_%d}", audio.Index)
+				preview = strings.Replace(preview, placeholder, fmt.Sprintf("[Audio %d]", audio.Index), 1)
 			}
 			if len(preview) > 60 {
 				preview = preview[:57] + "..."
@@ -1873,7 +1979,7 @@ func (m *model) renderAnthropicMessagesTab() string {
 				Padding(0, 2).
 				Width(contentWidth)
 
-			renderedContent := m.replaceImagePlaceholders(renderContentSmart(content, textWidth))
+			renderedContent := m.replaceAudioPlaceholders(m.replaceImagePlaceholders(renderContentSmart(content, textWidth)))
 
 			if msg.toolResultID != "" {
 				toolCallLabel := lipgloss.NewStyle().

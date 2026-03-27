@@ -195,8 +195,9 @@ func init() {
 }
 
 func main() {
-	// Clean up any temp images on exit
+	// Clean up any temp images/audio on exit
 	defer cleanupTempImages()
+	defer cleanupTempAudio()
 	// Restore terminal palette if we modified it
 	defer restoreTerminalPalette()
 

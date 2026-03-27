@@ -85,6 +85,9 @@ type model struct {
 
 	// Image references for current request
 	imageRefs []ImageRef
+
+	// Audio references for current request
+	audioRefs []AudioRef
 }
 
 func newSaveInput() textinput.Model {
@@ -700,6 +703,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								m.copyMessage = fmt.Sprintf("✗ Failed to open image: %v", err)
 							} else {
 								m.copyMessage = fmt.Sprintf("✓ Opened Image %d", img.Index)
+							}
+							m.copyMessageTime = time.Now()
+							return m, nil
+						}
+					}
+
+					// Handle clicks on audio placeholders
+					for _, audio := range m.audioRefs {
+						audioZoneID := fmt.Sprintf("audio-%d", audio.Index)
+						if zone.Get(audioZoneID).InBounds(msg) {
+							if err := openAudio(audio); err != nil {
+								m.copyMessage = fmt.Sprintf("✗ Failed to open audio: %v", err)
+							} else {
+								m.copyMessage = fmt.Sprintf("✓ Opened Audio %d", audio.Index)
+							}
+							m.copyMessageTime = time.Now()
+							return m, nil
+						}
+					}
+				}
+
+				// Handle audio clicks in Output tab (audio output from speech models)
+				if m.activeTab == TabOutput {
+					for _, audio := range m.audioRefs {
+						audioZoneID := fmt.Sprintf("audio-%d", audio.Index)
+						if zone.Get(audioZoneID).InBounds(msg) {
+							if err := openAudio(audio); err != nil {
+								m.copyMessage = fmt.Sprintf("✗ Failed to open audio: %v", err)
+							} else {
+								m.copyMessage = fmt.Sprintf("✓ Opened Audio %d", audio.Index)
 							}
 							m.copyMessageTime = time.Now()
 							return m, nil

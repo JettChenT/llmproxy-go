@@ -640,6 +640,8 @@ func reassembleSSEResponse(data []byte) *OpenAIResponse {
 	choiceReasoning := make(map[int]*strings.Builder)
 	choiceFinishReason := make(map[int]string)
 	choiceToolCalls := make(map[int]map[int]*ToolCall) // choice index -> tool call index -> tool call
+	choiceAudioData := make(map[int]*strings.Builder)
+	choiceAudioTranscript := make(map[int]*strings.Builder)
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -665,6 +667,10 @@ func reassembleSSEResponse(data []byte) *OpenAIResponse {
 					Reasoning        string     `json:"reasoning"`
 					ReasoningContent string     `json:"reasoning_content"`
 					ToolCalls        []ToolCall `json:"tool_calls"`
+					Audio            *struct {
+						Data       string `json:"data"`
+						Transcript string `json:"transcript"`
+					} `json:"audio,omitempty"`
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
@@ -730,6 +736,19 @@ func reassembleSSEResponse(data []byte) *OpenAIResponse {
 					existing.Function.Arguments += tc.Function.Arguments
 				}
 			}
+			// Accumulate audio data and transcript
+			if choice.Delta.Audio != nil {
+				if _, ok := choiceAudioData[idx]; !ok {
+					choiceAudioData[idx] = &strings.Builder{}
+					choiceAudioTranscript[idx] = &strings.Builder{}
+				}
+				if choice.Delta.Audio.Data != "" {
+					choiceAudioData[idx].WriteString(choice.Delta.Audio.Data)
+				}
+				if choice.Delta.Audio.Transcript != "" {
+					choiceAudioTranscript[idx].WriteString(choice.Delta.Audio.Transcript)
+				}
+			}
 		}
 
 		if chunk.Usage.PromptTokens > 0 {
@@ -782,6 +801,15 @@ func reassembleSSEResponse(data []byte) *OpenAIResponse {
 					}
 					choice.Message.ToolCalls = append(choice.Message.ToolCalls, *tc)
 				}
+			}
+		}
+		// Attach reassembled audio data
+		if ad, ok := choiceAudioData[i]; ok && ad.Len() > 0 {
+			choice.Message.Audio = &OpenAIAudioOutput{
+				Data: ad.String(),
+			}
+			if at, ok := choiceAudioTranscript[i]; ok {
+				choice.Message.Audio.Transcript = at.String()
 			}
 		}
 		choice.Message.Role = "assistant"

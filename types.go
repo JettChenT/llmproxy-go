@@ -66,13 +66,21 @@ type ToolCall struct {
 }
 
 // OpenAI message types
+// OpenAIAudioOutput represents audio data in an OpenAI response
+type OpenAIAudioOutput struct {
+	Data       string `json:"data,omitempty"`       // Base64-encoded audio
+	Transcript string `json:"transcript,omitempty"` // Audio transcript
+	Format     string `json:"format,omitempty"`     // Audio format (from request config)
+}
+
 type OpenAIMessage struct {
-	Role             string     `json:"role"`
-	Content          any        `json:"content"` // Can be string or array for vision
-	Name             string     `json:"name,omitempty"`
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID       string     `json:"tool_call_id,omitempty"`
-	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	Role             string             `json:"role"`
+	Content          any                `json:"content"` // Can be string or array for vision
+	Name             string             `json:"name,omitempty"`
+	ToolCalls        []ToolCall         `json:"tool_calls,omitempty"`
+	ToolCallID       string             `json:"tool_call_id,omitempty"`
+	ReasoningContent string             `json:"reasoning_content,omitempty"`
+	Audio            *OpenAIAudioOutput `json:"audio,omitempty"` // Audio output from speech models
 }
 
 type OpenAIRequest struct {
@@ -184,4 +192,13 @@ type ImageRef struct {
 	Index   int    // 1-based index for display
 	URL     string // URL or base64 data URL
 	IsBase64 bool  // True if the URL is a base64 data URL
+}
+
+// AudioRef represents a reference to audio found in a request/response
+type AudioRef struct {
+	Index      int    // 1-based index for display
+	Data       string // Base64-encoded audio data
+	Format     string // Audio format (wav, mp3, etc.)
+	Transcript string // Transcript text (for audio output)
+	IsOutput   bool   // True if from response (audio output)
 }
