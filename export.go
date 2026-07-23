@@ -126,7 +126,13 @@ func (m *model) exportChat() {
 
 func extractOpenAIExportMessages(req *LLMRequest, exportDir string, imageCounter int) ([]ExportMessage, int) {
 	var oaiReq OpenAIRequest
-	if err := json.Unmarshal(req.RequestBody, &oaiReq); err != nil {
+	if isResponsesEndpoint(req.Path) {
+		converted := convertResponsesRequest(req.RequestBody)
+		if converted == nil {
+			return nil, imageCounter
+		}
+		oaiReq = *converted
+	} else if err := json.Unmarshal(req.RequestBody, &oaiReq); err != nil {
 		return nil, imageCounter
 	}
 
@@ -183,7 +189,13 @@ func extractOpenAIExportMessages(req *LLMRequest, exportDir string, imageCounter
 func extractOpenAIResponseExportMessages(req *LLMRequest, exportDir string, imageCounter int) ([]ExportMessage, int) {
 	responseBody := req.ResponseBody
 	var resp OpenAIResponse
-	if err := json.Unmarshal(responseBody, &resp); err != nil {
+	if isResponsesEndpoint(req.Path) {
+		assembled := parseResponsesResponseBody(responseBody)
+		if assembled == nil {
+			return nil, imageCounter
+		}
+		resp = *assembled
+	} else if err := json.Unmarshal(responseBody, &resp); err != nil {
 		if isSSEData(responseBody) {
 			if assembled := reassembleSSEResponse(responseBody); assembled != nil {
 				resp = *assembled

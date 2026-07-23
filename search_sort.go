@@ -36,8 +36,16 @@ func (m *model) extractSearchableText(req *LLMRequest) string {
 				}
 			}
 		} else {
-			var openAIReq OpenAIRequest
-			if err := json.Unmarshal(req.RequestBody, &openAIReq); err == nil {
+			var openAIReq *OpenAIRequest
+			if isResponsesEndpoint(req.Path) {
+				openAIReq = convertResponsesRequest(req.RequestBody)
+			} else {
+				var parsed OpenAIRequest
+				if err := json.Unmarshal(req.RequestBody, &parsed); err == nil {
+					openAIReq = &parsed
+				}
+			}
+			if openAIReq != nil {
 				for _, msg := range openAIReq.Messages {
 					sb.WriteString(msg.Role)
 					sb.WriteString(" ")
@@ -90,8 +98,16 @@ func (m *model) extractSearchableText(req *LLMRequest) string {
 				}
 			}
 		} else {
-			var openAIResp OpenAIResponse
-			if err := json.Unmarshal(req.ResponseBody, &openAIResp); err == nil {
+			var openAIResp *OpenAIResponse
+			if isResponsesEndpoint(req.Path) {
+				openAIResp = parseResponsesResponseBody(req.ResponseBody)
+			} else {
+				var parsed OpenAIResponse
+				if err := json.Unmarshal(req.ResponseBody, &parsed); err == nil {
+					openAIResp = &parsed
+				}
+			}
+			if openAIResp != nil {
 				for _, choice := range openAIResp.Choices {
 					switch c := choice.Message.Content.(type) {
 					case string:

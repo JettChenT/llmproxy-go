@@ -998,7 +998,13 @@ func (m *model) renderMessagesTab() string {
 	}
 
 	var req OpenAIRequest
-	if err := json.Unmarshal(m.selected.RequestBody, &req); err != nil {
+	if isResponsesEndpoint(m.selected.Path) {
+		converted := convertResponsesRequest(m.selected.RequestBody)
+		if converted == nil {
+			return errorStyle.Render("Failed to parse Responses API request")
+		}
+		req = *converted
+	} else if err := json.Unmarshal(m.selected.RequestBody, &req); err != nil {
 		return errorStyle.Render(fmt.Sprintf("Failed to parse request: %v", err))
 	}
 
@@ -1311,7 +1317,23 @@ func (m *model) renderOutputTab() string {
 	}
 
 	var resp OpenAIResponse
-	if err := json.Unmarshal(m.selected.ResponseBody, &resp); err != nil {
+	if isResponsesEndpoint(m.selected.Path) {
+		assembled := parseResponsesResponseBody(m.selected.ResponseBody)
+		if assembled == nil {
+			return renderJSONBody(m.selected.ResponseBody, "Response")
+		}
+		// Use extracted token counts from the request if usage is missing
+		if assembled.Usage.PromptTokens == 0 && m.selected.InputTokens > 0 {
+			assembled.Usage.PromptTokens = m.selected.InputTokens
+		}
+		if assembled.Usage.CompletionTokens == 0 && m.selected.OutputTokens > 0 {
+			assembled.Usage.CompletionTokens = m.selected.OutputTokens
+		}
+		if assembled.Usage.TotalTokens == 0 {
+			assembled.Usage.TotalTokens = assembled.Usage.PromptTokens + assembled.Usage.CompletionTokens
+		}
+		resp = *assembled
+	} else if err := json.Unmarshal(m.selected.ResponseBody, &resp); err != nil {
 		// Try reassembling SSE streaming chunks into a structured response
 		if isSSEData(m.selected.ResponseBody) {
 			if assembled := reassembleSSEResponse(m.selected.ResponseBody); assembled != nil {
@@ -2519,10 +2541,18 @@ func getToolNameAndDesc(tool map[string]interface{}) (name, description string, 
 		schema = fn["parameters"]
 	}
 	// Anthropic format: tools[].{name, description, input_schema}
+	// Responses API format: tools[].{type, name, description, parameters} (flattened)
 	if name == "" {
 		name, _ = tool["name"].(string)
 		description, _ = tool["description"].(string)
 		schema = tool["input_schema"]
+		if schema == nil {
+			schema = tool["parameters"]
+		}
+		// Built-in tools (web_search, file_search, ...) only carry a type
+		if name == "" {
+			name, _ = tool["type"].(string)
+		}
 	}
 	return
 }

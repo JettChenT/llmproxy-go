@@ -109,8 +109,10 @@ func isLLMEndpoint(path string) bool {
 		"/v1/completions",
 		"/v1/embeddings",
 		"/v1/messages",
+		"/v1/responses",
 		"/chat/completions",
 		"/completions",
+		"/responses",
 	}
 	for _, p := range llmPaths {
 		if strings.HasSuffix(path, p) {
@@ -966,6 +968,14 @@ func extractTokenUsageFromSSE(req *LLMRequest, data []byte) (providerCost float6
 				PromptTokenCount     int `json:"promptTokenCount"`
 				CandidatesTokenCount int `json:"candidatesTokenCount"`
 			} `json:"usageMetadata"`
+			// Responses API format: terminal events carry the full response with usage
+			Response struct {
+				Usage struct {
+					InputTokens  int     `json:"input_tokens"`
+					OutputTokens int     `json:"output_tokens"`
+					Cost         float64 `json:"cost"`
+				} `json:"usage"`
+			} `json:"response"`
 		}
 
 		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
@@ -996,6 +1006,17 @@ func extractTokenUsageFromSSE(req *LLMRequest, data []byte) (providerCost float6
 		}
 		if event.UsageMetadata.CandidatesTokenCount > 0 {
 			req.OutputTokens = event.UsageMetadata.CandidatesTokenCount
+		}
+
+		// Responses API: usage inside the response object of response.completed events
+		if event.Response.Usage.InputTokens > 0 {
+			req.InputTokens = event.Response.Usage.InputTokens
+		}
+		if event.Response.Usage.OutputTokens > 0 {
+			req.OutputTokens = event.Response.Usage.OutputTokens
+		}
+		if event.Response.Usage.Cost > 0 {
+			providerCost = event.Response.Usage.Cost
 		}
 
 		// Provider-reported cost (e.g., OpenRouter includes cost in usage)

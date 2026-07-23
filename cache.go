@@ -67,6 +67,32 @@ func GenerateCacheKey(path string, requestBody []byte) string {
 		return path + ":" + hex.EncodeToString(hash[:])
 	}
 
+	// Responses API normalization: key off input/instructions (an OpenAIRequest
+	// parse would see empty messages and collide all Responses requests per model)
+	if isResponsesEndpoint(path) {
+		var req struct {
+			Model              string          `json:"model"`
+			Input              json.RawMessage `json:"input"`
+			Instructions       string          `json:"instructions"`
+			Tools              json.RawMessage `json:"tools"`
+			ToolChoice         json.RawMessage `json:"tool_choice"`
+			Text               json.RawMessage `json:"text"`
+			Reasoning          json.RawMessage `json:"reasoning"`
+			PreviousResponseID string          `json:"previous_response_id"`
+			Temperature        float64         `json:"temperature"`
+			TopP               float64         `json:"top_p"`
+			MaxOutputTokens    int             `json:"max_output_tokens"`
+			Stream             bool            `json:"stream"`
+		}
+		if err := json.Unmarshal(requestBody, &req); err != nil {
+			hash := sha256.Sum256(requestBody)
+			return path + ":" + hex.EncodeToString(hash[:])
+		}
+		data, _ := json.Marshal(req)
+		hash := sha256.Sum256(data)
+		return path + ":" + hex.EncodeToString(hash[:])
+	}
+
 	// Default: OpenAI format normalization
 	var req OpenAIRequest
 	if err := json.Unmarshal(requestBody, &req); err != nil {

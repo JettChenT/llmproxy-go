@@ -186,6 +186,12 @@ func extractLLMOutputText(req *LLMRequest) string {
 	if isAnthropicEndpoint(req.Path) {
 		return extractAnthropicOutputText(req.ResponseBody)
 	}
+	if isResponsesEndpoint(req.Path) {
+		if assembled := parseResponsesResponseBody(req.ResponseBody); assembled != nil {
+			return openAIResponseCopyText(*assembled)
+		}
+		return ""
+	}
 	return extractOpenAIOutputText(req.ResponseBody)
 }
 
@@ -202,7 +208,10 @@ func extractOpenAIOutputText(responseBody []byte) string {
 			return ""
 		}
 	}
+	return openAIResponseCopyText(resp)
+}
 
+func openAIResponseCopyText(resp OpenAIResponse) string {
 	var parts []string
 	for _, choice := range resp.Choices {
 		choiceText := renderOpenAIChoiceCopyText(choice)

@@ -42,7 +42,18 @@ func extractRequestPreviewSnippet(path string, requestBody []byte) string {
 	if isGeminiEndpoint(path) {
 		return extractGeminiRequestPreviewSnippet(requestBody)
 	}
+	if isResponsesEndpoint(path) {
+		return extractResponsesRequestPreviewSnippet(requestBody)
+	}
 	return extractOpenAIRequestPreviewSnippet(requestBody)
+}
+
+func extractResponsesRequestPreviewSnippet(requestBody []byte) string {
+	req := convertResponsesRequest(requestBody)
+	if req == nil {
+		return ""
+	}
+	return openAIRequestPreviewSnippet(*req)
 }
 
 func extractAnthropicRequestPreviewSnippet(requestBody []byte) string {
@@ -94,7 +105,10 @@ func extractOpenAIRequestPreviewSnippet(requestBody []byte) string {
 	if err := json.Unmarshal(requestBody, &req); err != nil {
 		return ""
 	}
+	return openAIRequestPreviewSnippet(req)
+}
 
+func openAIRequestPreviewSnippet(req OpenAIRequest) string {
 	for _, msg := range req.Messages {
 		if strings.EqualFold(msg.Role, "system") {
 			if snippet := normalizePreviewSnippet(extractOpenAITextContent(msg.Content)); snippet != "" {
@@ -164,6 +178,20 @@ func extractStreamingResponsePreviewSnippet(responseBody []byte) string {
 		}
 	}
 
+	// Responses API SSE format
+	if isSSEData(responseBody) && isResponsesSSEData(responseBody) {
+		if assembled := reassembleResponsesSSEResponse(responseBody); assembled != nil {
+			for _, choice := range assembled.Choices {
+				if snippet := normalizePreviewSnippet(extractOpenAITextContent(choice.Message.Content)); snippet != "" {
+					return snippet
+				}
+				if snippet := normalizePreviewSnippet(choice.Message.ReasoningContent); snippet != "" {
+					return snippet
+				}
+			}
+		}
+	}
+
 	if isSSEData(responseBody) {
 		// Try OpenAI SSE format
 		if assembled := reassembleSSEResponse(responseBody); assembled != nil {
@@ -225,6 +253,18 @@ func extractStreamingResponsePreviewSnippet(responseBody []byte) string {
 				if snippet := normalizePreviewSnippet(p.Text); snippet != "" {
 					return snippet
 				}
+			}
+		}
+	}
+
+	// Responses API format: output[] items on a non-streaming response
+	if assembled := convertResponsesResponse(responseBody); assembled != nil {
+		for _, choice := range assembled.Choices {
+			if snippet := normalizePreviewSnippet(extractOpenAITextContent(choice.Message.Content)); snippet != "" {
+				return snippet
+			}
+			if snippet := normalizePreviewSnippet(choice.Message.ReasoningContent); snippet != "" {
+				return snippet
 			}
 		}
 	}
