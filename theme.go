@@ -9,7 +9,6 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	colorful "github.com/lucasb-eyer/go-colorful"
-	"golang.org/x/sys/unix"
 )
 
 // ThemeMode selects between hardcoded and base16-derived themes.
@@ -189,17 +188,15 @@ func queryTerminalBase16Colors() (base16 [16]colorful.Color, fg, bg colorful.Col
 	fd := int(tty.Fd())
 
 	// Save terminal state and set raw-ish mode (no echo, no canonical)
-	oldTermios, err := unix.IoctlGetTermios(fd, unix.TIOCGETA)
+	oldTermios, err := getTerminalState(fd)
 	if err != nil {
 		return base16, fg, bg, fmt.Errorf("cannot get termios: %w", err)
 	}
-	defer unix.IoctlSetTermios(fd, unix.TIOCSETA, oldTermios) //nolint:errcheck
+	defer setTerminalState(fd, oldTermios) //nolint:errcheck
 
 	raw := *oldTermios
-	raw.Lflag &^= unix.ECHO | unix.ICANON
-	raw.Cc[unix.VMIN] = 0
-	raw.Cc[unix.VTIME] = 1 // 100ms timeout per byte
-	if err := unix.IoctlSetTermios(fd, unix.TIOCSETA, &raw); err != nil {
+	configureTerminalRawish(&raw)
+	if err := setTerminalState(fd, &raw); err != nil {
 		return base16, fg, bg, fmt.Errorf("cannot set raw mode: %w", err)
 	}
 
